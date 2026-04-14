@@ -1,0 +1,19 @@
+{
+  "name": "ifc-construction-viewer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^8.0.4"
+  },
+  "dependencies": {
+    "@thatopen/components": "^3.4.0",
+    "camera-controls": "^3.1.2",
+    "three": "^0.183.2"
+  }
+}

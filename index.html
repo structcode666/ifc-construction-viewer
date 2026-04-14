@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IFC Construction Viewer</title>
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar">
+        <h1>IFC Construction Viewer</h1>
+
+        <label for="ifcFileInput" class="file-label">Choose IFC File</label>
+        <input id="ifcFileInput" type="file" accept=".ifc" />
+
+        <button id="loadButton">Load IFC</button>
+
+        <div class="status">
+          <p><strong>Status:</strong> <span id="statusText">Waiting for file</span></p>
+        </div>
+      </aside>
+
+      <main class="viewer-area">
+        <div id="viewer-container"></div>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
