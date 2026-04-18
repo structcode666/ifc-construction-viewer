@@ -52,5 +52,5 @@ export async function setupWorld(container) {
     fragments.core.update(true);
   });
 
-  return { components, world, fragments };
+  return { components, world, fragments, orbitControls: world.camera.controls };
 }

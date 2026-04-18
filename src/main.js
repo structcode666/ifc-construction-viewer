@@ -2,6 +2,7 @@ import "./style.css";
 import { getUI, setStatus } from "./app/ui.js";
 import { setupWorld } from "./viewer/setupWorld.js";
 import { loadIfcFromFile } from "./viewer/loadIfc.js";
+import { initSelection } from "./viewer/selection.js";
 
 const ui = getUI();
 
@@ -15,6 +16,7 @@ async function startApp() {
   components = setup.components;
   world = setup.world;
   orbitControls = setup.orbitControls;
+  initSelection({ components, world, ui });
 }
 
 await startApp();
