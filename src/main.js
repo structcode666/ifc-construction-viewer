@@ -9,6 +9,7 @@ const ui = getUI();
 let components = null;
 let world = null;
 let orbitControls = null;
+let fragments = null;
 let currentModel = null;
 
 async function startApp() {
@@ -16,7 +17,8 @@ async function startApp() {
   components = setup.components;
   world = setup.world;
   orbitControls = setup.orbitControls;
-  initSelection({ components, world, ui });
+  fragments = setup.fragments;
+  initSelection({ components, world, fragments, ui });
 }
 
 await startApp();
