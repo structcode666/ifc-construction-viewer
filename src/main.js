@@ -15,6 +15,7 @@ let fragments = null;
 let currentModel = null;
 
 let selection = null;
+let mode = "staging";
 const staging = createStagingManager();
 
 async function startApp() {
@@ -125,15 +126,59 @@ ui.resetVisibilityButton.addEventListener("click", async () => {
   }
 });
 
+ui.toggleModeButton.addEventListener("click", async () => {
+  if (mode === "staging") {
+    mode = "sequencing";
+    ui.toggleModeButton.textContent = "Switch to Staging";
+
+    await showCurrentSliderStage();
+    setStatus("Sequencing mode enabled.");
+  } else {
+    mode = "staging";
+    ui.toggleModeButton.textContent = "Switch to Sequencing";
+
+    await components.get(OBC.Hider).set(true);
+    setStatus("Staging mode enabled (full model visible).");
+  }
+});
 function setSliderToStageIndex(index) {
   ui.stageSlider.value = String(index);
+}
+
+function isModelIdMapEmpty(modelIdMap) {
+  if (!modelIdMap) return true;
+
+  const modelIds = Object.keys(modelIdMap);
+  if (modelIds.length === 0) return true;
+
+  for (const modelId of modelIds) {
+    const localIds = modelIdMap[modelId];
+
+    if (localIds && localIds.size > 0) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 async function showCurrentSliderStage() {
   const stages = staging.getStages();
 
+  if (mode === "staging") {
+    await components.get(OBC.Hider).set(true);
+    return;
+  }
+
   if (stages.length === 0) {
     updateStageLabel(null, 0, 0);
+
+    try {
+      await components.get(OBC.Hider).set(true);
+    } catch (error) {
+      console.error("Failed to reset visibility with no stages:", error);
+    }
+
     return;
   }
 
@@ -150,12 +195,18 @@ async function showCurrentSliderStage() {
 
   const itemsToShow = staging.getActiveStageSelection();
 
-  if (!itemsToShow) {
-    setStatus("No staged items found.");
+  updateStageLabel(stage, stageIndex, stages.length);
+
+  if (isModelIdMapEmpty(itemsToShow)) {
+    try {
+      await components.get(OBC.Hider).set(true);
+      setStatus(`${stage.name} is empty. Showing full model.`);
+    } catch (error) {
+      console.error("Failed to show full model for empty stage:", error);
+      setStatus("Failed to update stage view.");
+    }
     return;
   }
-
-  updateStageLabel(stage, stageIndex, stages.length);
 
   try {
     await components.get(OBC.Hider).isolate(itemsToShow);
