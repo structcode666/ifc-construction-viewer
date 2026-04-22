@@ -165,11 +165,6 @@ function isModelIdMapEmpty(modelIdMap) {
 async function showCurrentSliderStage() {
   const stages = staging.getStages();
 
-  if (mode === "staging") {
-    await components.get(OBC.Hider).set(true);
-    return;
-  }
-
   if (stages.length === 0) {
     updateStageLabel(null, 0, 0);
 
@@ -190,12 +185,22 @@ async function showCurrentSliderStage() {
     return;
   }
 
+  updateStageLabel(stage, stageIndex, stages.length);
+
+  if (mode === "staging") {
+    try {
+      await components.get(OBC.Hider).set(true);
+    } catch (error) {
+      console.error("Failed to reset visibility in staging mode:", error);
+      setStatus("Failed to update stage view.");
+    }
+    return;
+  }
+
   staging.setActiveStage(stage.id);
   staging.setViewMode("cumulative");
 
   const itemsToShow = staging.getActiveStageSelection();
-
-  updateStageLabel(stage, stageIndex, stages.length);
 
   if (isModelIdMapEmpty(itemsToShow)) {
     try {
