@@ -9,6 +9,12 @@ export function getUI() {
     hideSelectedButton: document.getElementById("hideSelectedButton"),
     isolateSelectedButton: document.getElementById("isolateSelectedButton"),
     resetVisibilityButton: document.getElementById("resetVisibilityButton"),
+
+    addStageButton: document.getElementById("add-stage-button"),
+    assignStageButton: document.getElementById("assign-stage-button"),
+    stageSlider: document.getElementById("stage-slider"),
+    stageLabel: document.getElementById("stage-label"),
+    stageSummary: document.getElementById("stage-summary"),
   };
 }
 

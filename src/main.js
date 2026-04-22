@@ -1,8 +1,10 @@
 import "./style.css";
+import * as OBC from "@thatopen/components";
 import { getUI, setStatus } from "./app/ui.js";
 import { setupWorld } from "./viewer/setupWorld.js";
 import { loadIfcFromFile } from "./viewer/loadIfc.js";
 import { initSelection } from "./viewer/selection.js";
+import { createStagingManager } from "./viewer/staging.js";
 
 const ui = getUI();
 
@@ -12,13 +14,19 @@ let orbitControls = null;
 let fragments = null;
 let currentModel = null;
 
+let selection = null;
+const staging = createStagingManager();
+
 async function startApp() {
   const setup = await setupWorld(ui.viewerContainer);
   components = setup.components;
   world = setup.world;
   orbitControls = setup.orbitControls;
   fragments = setup.fragments;
-  initSelection({ components, world, fragments, ui });
+
+  selection = initSelection({ components, world, fragments, ui });
+
+  renderStagingUI();
 }
 
 await startApp();
@@ -48,3 +56,161 @@ ui.loadButton.addEventListener("click", async () => {
     setStatus("Failed to load IFC file.");
   }
 });
+
+ui.addStageButton.addEventListener("click", async () => {
+  const stageNumber = staging.getStages().length + 1;
+  const stage = staging.createStage(`Stage ${stageNumber}`);
+
+  renderStagingUI();
+  setSliderToStageIndex(staging.getStages().length - 1);
+
+  await showCurrentSliderStage();
+
+  setStatus(`Created ${stage.name}.`);
+  console.log("Created stage:", stage);
+  console.log("Staging state:", staging.debugState());
+});
+
+ui.assignStageButton.addEventListener("click", async () => {
+  const stages = staging.getStages();
+
+  if (stages.length === 0) {
+    setStatus("Create a stage first.");
+    return;
+  }
+
+  const currentSelection = selection.getSelectedItem();
+
+  if (!currentSelection) {
+    setStatus("Select some elements first.");
+    return;
+  }
+
+  const currentStageIndex = Number(ui.stageSlider.value);
+  const currentStage = stages[currentStageIndex];
+
+  if (!currentStage) {
+    setStatus("No current stage selected.");
+    return;
+  }
+
+  const result = staging.assignSelectionToStage(currentStage.id, currentSelection);
+
+  if (!result.ok) {
+    setStatus(`Stage assignment failed: ${result.reason}`);
+    return;
+  }
+
+  renderStagingUI();
+  setSliderToStageIndex(currentStageIndex);
+
+  await showCurrentSliderStage();
+
+  setStatus(`Assigned selection to ${currentStage.name}.`);
+  console.log("Assigned selection:", currentStage.name);
+  console.log("Staging state:", staging.debugState());
+});
+
+ui.stageSlider.addEventListener("input", async () => {
+  await showCurrentSliderStage();
+});
+
+ui.resetVisibilityButton.addEventListener("click", async () => {
+  try {
+    await components.get(OBC.Hider).set(true);
+    setStatus("Visibility reset.");
+  } catch (error) {
+    console.error("Reset visibility failed:", error);
+    setStatus("Failed to reset visibility.");
+  }
+});
+
+function setSliderToStageIndex(index) {
+  ui.stageSlider.value = String(index);
+}
+
+async function showCurrentSliderStage() {
+  const stages = staging.getStages();
+
+  if (stages.length === 0) {
+    updateStageLabel(null, 0, 0);
+    return;
+  }
+
+  const stageIndex = Number(ui.stageSlider.value);
+  const stage = stages[stageIndex];
+
+  if (!stage) {
+    setStatus("Invalid stage index.");
+    return;
+  }
+
+  staging.setActiveStage(stage.id);
+  staging.setViewMode("cumulative");
+
+  const itemsToShow = staging.getActiveStageSelection();
+
+  if (!itemsToShow) {
+    setStatus("No staged items found.");
+    return;
+  }
+
+  updateStageLabel(stage, stageIndex, stages.length);
+
+  try {
+    await components.get(OBC.Hider).isolate(itemsToShow);
+    setStatus(`Showing cumulative view up to ${stage.name}.`);
+  } catch (error) {
+    console.error("Failed to show stage:", error);
+    setStatus("Failed to update stage view.");
+  }
+}
+
+function renderStagingUI() {
+  const stages = staging.getStages();
+
+  if (stages.length === 0) {
+    ui.stageSlider.disabled = true;
+    ui.stageSlider.min = "0";
+    ui.stageSlider.max = "0";
+    ui.stageSlider.value = "0";
+
+    updateStageLabel(null, 0, 0);
+    renderStageSummary(stages);
+    return;
+  }
+
+  ui.stageSlider.disabled = false;
+  ui.stageSlider.min = "0";
+  ui.stageSlider.max = String(stages.length - 1);
+
+  const currentValue = Number(ui.stageSlider.value);
+  const clampedValue = Math.min(currentValue, stages.length - 1);
+  ui.stageSlider.value = String(clampedValue);
+
+  const activeStage = stages[clampedValue];
+  updateStageLabel(activeStage, clampedValue, stages.length);
+  renderStageSummary(stages);
+}
+
+function updateStageLabel(stage, index, total) {
+  if (!stage) {
+    ui.stageLabel.textContent = "No stages yet.";
+    return;
+  }
+
+  ui.stageLabel.textContent = `Current: ${stage.name} (${index + 1} / ${total})`;
+}
+
+function renderStageSummary(stages) {
+  if (stages.length === 0) {
+    ui.stageSummary.innerHTML = "<p>No stages created yet.</p>";
+    return;
+  }
+
+  ui.stageSummary.innerHTML = stages
+    .map((stage, index) => {
+      return `<div>Stage ${index + 1}: ${stage.name} (${stage.itemCount} items)</div>`;
+    })
+    .join("");
+}

@@ -322,6 +322,10 @@ export function initSelection({ components, world, fragments, ui }) {
     await applySelection(expandedSelection);
   }
 
+  function getSelectedItem() {
+    return selectedItem;
+  }
+
   ui.viewerContainer.addEventListener("pointerdown", (event) => {
     pointerDownPosition = {
       x: event.clientX,
@@ -389,4 +393,9 @@ export function initSelection({ components, world, fragments, ui }) {
       setStatus("Failed to reset visibility.");
     }
   });
+
+  return {
+    getSelectedItem,
+  };
+
 }

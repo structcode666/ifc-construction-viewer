@@ -27,7 +27,35 @@
           <button id="isolateSelectedButton">Isolate Selected</button>
           <button id="resetVisibilityButton">Reset Visibility</button>
         </div>
+
+        <div class="staging-panel">
+          <h3>Construction Staging</h3>
+
+          <div class="staging-actions">
+            <button id="add-stage-button">Add New Stage</button>
+            <button id="assign-stage-button">Assign Selection To Current Stage</button>
+          </div>
+
+          <div class="staging-timeline">
+            <label for="stage-slider">Stage Timeline</label>
+            <input
+              id="stage-slider"
+              type="range"
+              min="0"
+              max="0"
+              value="0"
+              step="1"
+              disabled
+            />
+            <div id="stage-label">No stages yet.</div>
+          </div>
+
+          <div id="stage-summary"></div>
+        </div>
+
       </aside>
+
+         
 
       <main class="viewer-area">
         <div id="viewer-container"></div>
