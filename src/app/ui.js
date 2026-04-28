@@ -16,6 +16,9 @@ export function getUI() {
     stageSlider: document.getElementById("stage-slider"),
     stageLabel: document.getElementById("stage-label"),
     stageSummary: document.getElementById("stage-summary"),
+
+    stagingTimeline: document.getElementById("staging-timeline"),
+    toggleContextButton: document.getElementById("toggleContextButton"),
   };
 }
 

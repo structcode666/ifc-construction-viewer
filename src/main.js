@@ -16,6 +16,7 @@ let currentModel = null;
 
 let selection = null;
 let mode = "staging";
+let showContext = false;
 const staging = createStagingManager();
 
 async function startApp() {
@@ -25,7 +26,7 @@ async function startApp() {
   orbitControls = setup.orbitControls;
   fragments = setup.fragments;
 
-  selection = initSelection({ components, world, fragments, ui });
+  selection = initSelection({ components, world, fragments, ui, onSelectionChanged: showCurrentSliderStage, });
 
   renderStagingUI();
 }
@@ -119,6 +120,7 @@ ui.stageSlider.addEventListener("input", async () => {
 ui.resetVisibilityButton.addEventListener("click", async () => {
   try {
     await components.get(OBC.Hider).set(true);
+    await resetAllOpacity();
     setStatus("Visibility reset.");
   } catch (error) {
     console.error("Reset visibility failed:", error);
@@ -131,11 +133,15 @@ ui.toggleModeButton.addEventListener("click", async () => {
     mode = "sequencing";
     ui.toggleModeButton.textContent = "Switch to Staging";
 
+    ui.stagingTimeline.classList.remove("is-hidden");
+
     await showCurrentSliderStage();
     setStatus("Sequencing mode enabled.");
   } else {
     mode = "staging";
     ui.toggleModeButton.textContent = "Switch to Sequencing";
+
+    ui.stagingTimeline.classList.add("is-hidden");
 
     await components.get(OBC.Hider).set(true);
     setStatus("Staging mode enabled (full model visible).");
@@ -144,6 +150,16 @@ ui.toggleModeButton.addEventListener("click", async () => {
 function setSliderToStageIndex(index) {
   ui.stageSlider.value = String(index);
 }
+
+ui.toggleContextButton.addEventListener("click", async () => {
+  showContext = !showContext;
+
+  ui.toggleContextButton.textContent = showContext
+    ? "Hide Context"
+    : "Show Context";
+
+  await showCurrentSliderStage();
+});
 
 function isModelIdMapEmpty(modelIdMap) {
   if (!modelIdMap) return true;
@@ -160,6 +176,54 @@ function isModelIdMapEmpty(modelIdMap) {
   }
 
   return true;
+}
+
+async function getAllGeometryItems() {
+  const allItems = {};
+
+  for (const [modelId, model] of fragments.list) {
+    const ids = await model.getItemsIdsWithGeometry();
+    allItems[modelId] = new Set(ids);
+  }
+
+  return allItems;
+}
+
+function subtractModelIdMap(allItems, itemsToRemove) {
+  const result = {};
+
+  for (const modelId of Object.keys(allItems)) {
+    result[modelId] = new Set(allItems[modelId]);
+
+    const removeIds = itemsToRemove?.[modelId];
+
+    if (!removeIds) continue;
+
+    for (const id of removeIds) {
+      result[modelId].delete(id);
+    }
+
+    if (result[modelId].size === 0) {
+      delete result[modelId];
+    }
+  }
+
+  return result;
+}
+
+async function resetAllOpacity() {
+  for (const [, model] of fragments.list) {
+    await model.resetOpacity();
+  }
+}
+
+async function setOpacityForItems(items, opacity) {
+  for (const [modelId, localIds] of Object.entries(items)) {
+    const model = fragments.list.get(modelId);
+    if (!model) continue;
+
+    await model.setOpacity([...localIds], opacity);
+  }
 }
 
 async function showCurrentSliderStage() {
@@ -189,11 +253,30 @@ async function showCurrentSliderStage() {
 
   if (mode === "staging") {
     try {
-      await components.get(OBC.Hider).set(true);
+      const hider = components.get(OBC.Hider);
+
+      await hider.set(true);
+      await resetAllOpacity();
+
+      if (showContext) {
+        const assignedItems = mergeAllStageItems();
+
+        if (!isModelIdMapEmpty(assignedItems)) {
+          await setOpacityForItems(assignedItems, 0.15);
+          setStatus("Staging mode: assigned elements shown as transparent context.");
+          return;
+        }
+
+        setStatus("Staging mode: no assigned elements yet.");
+        return;
+      }
+
+      setStatus("Staging mode enabled. Full model visible.");
     } catch (error) {
-      console.error("Failed to reset visibility in staging mode:", error);
+      console.error("Failed to update staging mode view:", error);
       setStatus("Failed to update stage view.");
     }
+
     return;
   }
 
@@ -213,13 +296,28 @@ async function showCurrentSliderStage() {
     return;
   }
 
-  try {
-    await components.get(OBC.Hider).isolate(itemsToShow);
+try {
+  const hider = components.get(OBC.Hider);
+
+  await resetAllOpacity();
+
+  if (!showContext) {
+    await hider.isolate(itemsToShow);
     setStatus(`Showing cumulative view up to ${stage.name}.`);
-  } catch (error) {
-    console.error("Failed to show stage:", error);
-    setStatus("Failed to update stage view.");
+  } else {
+    await hider.set(true);
+
+    const allItems = await getAllGeometryItems();
+    const contextItems = subtractModelIdMap(allItems, itemsToShow);
+
+    await setOpacityForItems(contextItems, 0.15);
+
+    setStatus(`Showing ${stage.name} with transparent context.`);
   }
+} catch (error) {
+  console.error("Failed to show stage:", error);
+  setStatus("Failed to update stage view.");
+}
 }
 
 function renderStagingUI() {
@@ -270,3 +368,25 @@ function renderStageSummary(stages) {
     })
     .join("");
 }
+
+function mergeAllStageItems() {
+  const merged = {};
+  const debugState = staging.debugState();
+
+  for (const stage of debugState.stages) {
+    for (const [modelId, localIds] of Object.entries(stage.items)) {
+      if (!merged[modelId]) {
+        merged[modelId] = new Set();
+      }
+
+      for (const id of localIds) {
+        merged[modelId].add(id);
+      }
+    }
+  }
+
+  return merged;
+}
+
+
+

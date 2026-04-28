@@ -2,7 +2,13 @@ import * as OBC from "@thatopen/components";
 import * as THREE from "three";
 import { setStatus, setSelectionInfo } from "../app/ui.js";
 
-export function initSelection({ components, world, fragments, ui }) {
+export function initSelection({
+  components,
+  world,
+  fragments,
+  ui,
+  onSelectionChanged,
+}) {
   let selectedItem = null;
 
   const hider = components.get(OBC.Hider);
@@ -96,7 +102,6 @@ export function initSelection({ components, world, fragments, ui }) {
 
   function toggleModelIdMapInSelection(currentSelection, clickedSelection) {
     const nextSelection = cloneModelIdMap(currentSelection);
-
     const shouldRemove = modelIdMapContainsAll(nextSelection, clickedSelection);
 
     for (const modelId of Object.keys(clickedSelection)) {
@@ -130,6 +135,10 @@ export function initSelection({ components, world, fragments, ui }) {
     await fragments.resetHighlight();
     await fragments.core.update(true);
 
+    if (onSelectionChanged) {
+      await onSelectionChanged();
+    }
+
     setStatus("Selection cleared.");
     setSelectionInfo("No element selected.");
   }
@@ -145,6 +154,10 @@ export function initSelection({ components, world, fragments, ui }) {
     await fragments.resetHighlight();
     await fragments.highlight(selectionMaterial, modelIdMap);
     await fragments.core.update(true);
+
+    if (onSelectionChanged) {
+      await onSelectionChanged();
+    }
 
     const stats = getSelectionStats(modelIdMap);
 
@@ -200,9 +213,6 @@ export function initSelection({ components, world, fragments, ui }) {
         [modelId]: new Set([localId]),
       };
     }
-
-    // Uncomment once if you want to inspect what relation names your IFC actually has.
-    // console.log("Available relation names:", await model.getRelationNames());
 
     const [itemData] = await model.getItemsData([localId], {
       attributesDefault: true,
@@ -315,6 +325,7 @@ export function initSelection({ components, world, fragments, ui }) {
         selectedItem,
         expandedSelection
       );
+
       await applySelection(mergedSelection);
       return;
     }
@@ -384,18 +395,7 @@ export function initSelection({ components, world, fragments, ui }) {
     }
   });
 
-  ui.resetVisibilityButton.addEventListener("click", async () => {
-    try {
-      await hider.set(true);
-      setStatus("Visibility reset.");
-    } catch (error) {
-      console.error("Reset visibility failed:", error);
-      setStatus("Failed to reset visibility.");
-    }
-  });
-
   return {
     getSelectedItem,
   };
-
 }
