@@ -2,7 +2,7 @@ import * as OBC from "@thatopen/components";
 
 let loaderIsSetup = false;
 
-export async function loadIfcFromFile(components, file) {
+export async function loadIfcFromFile(components, file, onProgress) {
   const ifcLoader = components.get(OBC.IfcLoader);
 
   if (!loaderIsSetup) {
@@ -24,6 +24,10 @@ export async function loadIfcFromFile(components, file) {
     processData: {
       progressCallback: (progress) => {
         console.log("IFC conversion progress:", progress);
+
+        if (onProgress) {
+          onProgress(progress);
+        }
       },
     },
   });
