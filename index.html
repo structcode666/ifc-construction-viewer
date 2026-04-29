@@ -4,23 +4,35 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>IFC Construction Viewer</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
   </head>
+
   <body>
     <div id="app">
       <aside class="sidebar">
-        <h1>IFC Construction Viewer</h1>
+        <div class="sidebar-header">
+          <h1>IFC Construction Viewer</h1>
+          <p>Construction staging and sequencing tool</p>
+        </div>
 
-        <label for="ifcFileInput" class="file-label">Choose IFC File</label>
-        <input id="ifcFileInput" type="file" accept=".ifc" />
-
-        <button id="loadButton">Load IFC</button>
+        <div class="file-panel">
+          <label for="ifcFileInput" class="file-label">Choose IFC File</label>
+          <div id="fileName" class="file-name">No file selected</div>
+          <input id="ifcFileInput" type="file" accept=".ifc" />
+          <button id="loadButton">Load IFC</button>
+        </div>
 
         <div class="status">
           <p><strong>Status:</strong> <span id="statusText">Waiting for file</span></p>
         </div>
 
         <div id="selectionInfo">No element selected.</div>
-
 
         <div class="viewer-actions">
           <button id="hideSelectedButton">Hide Selected</button>
@@ -36,11 +48,11 @@
           <div class="staging-actions">
             <button id="add-stage-button">Add New Stage</button>
             <button id="assign-stage-button">Assign Selection To Current Stage</button>
-            
           </div>
 
           <div id="staging-timeline" class="staging-timeline is-hidden">
             <label for="stage-slider">Stage Timeline</label>
+
             <input
               id="stage-slider"
               type="range"
@@ -50,21 +62,34 @@
               step="1"
               disabled
             />
+
             <div id="stage-label">No stages yet.</div>
           </div>
 
           <div id="stage-summary"></div>
         </div>
-
       </aside>
 
-         
-
       <main class="viewer-area">
+        <div class="viewer-toolbar">
+          <button id="toggleContextButton" class="viewer-context-button">
+            Show Context
+          </button>
+        </div>
+
+        <div id="loadingOverlay" class="loading-overlay is-hidden">
+          <div class="loading-card">
+            <div class="loading-title">Loading IFC model</div>
+            <div id="loadingText" class="loading-text">Preparing file...</div>
+
+            <div class="loading-track">
+              <div id="loadingBar" class="loading-bar"></div>
+            </div>
+          </div>
+        </div>
+
         <div id="viewer-container"></div>
       </main>
-
-      <button id="toggleContextButton">Show Context</button>
     </div>
 
     <script type="module" src="/src/main.js"></script>

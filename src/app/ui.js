@@ -19,6 +19,10 @@ export function getUI() {
 
     stagingTimeline: document.getElementById("staging-timeline"),
     toggleContextButton: document.getElementById("toggleContextButton"),
+
+    loadingOverlay: document.getElementById("loadingOverlay"),
+    loadingBar: document.getElementById("loadingBar"),
+    loadingText: document.getElementById("loadingText"),
   };
 }
 

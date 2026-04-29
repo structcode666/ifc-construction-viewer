@@ -41,10 +41,16 @@ ui.loadButton.addEventListener("click", async () => {
     return;
   }
 
+  showLoadingOverlay();
+
   try {
     setStatus("Loading IFC...");
 
-    currentModel = await loadIfcFromFile(components, file);
+    currentModel = await loadIfcFromFile(
+      components,
+      file,
+      updateLoadingProgress
+    );
 
     await world.camera.fitToItems();
 
@@ -56,6 +62,8 @@ ui.loadButton.addEventListener("click", async () => {
   } catch (error) {
     console.error(error);
     setStatus("Failed to load IFC file.");
+  } finally {
+    hideLoadingOverlay();
   }
 });
 
@@ -392,5 +400,52 @@ function mergeAllStageItems() {
   return merged;
 }
 
+//progress bar helpers//
+
+function showLoadingOverlay() {
+  ui.loadingOverlay.classList.remove("is-hidden");
+  ui.loadingBar.style.width = "0%";
+  ui.loadingText.textContent = "Preparing file...";
+}
+
+function updateLoadingProgress(progress) {
+  console.log("Loading progress value:", progress);
+
+  let percent = 0;
+
+  if (typeof progress === "number") {
+    percent = progress <= 1 ? progress * 100 : progress;
+  }
+
+  if (typeof progress === "object" && progress !== null) {
+    if ("percentage" in progress) {
+      percent = progress.percentage;
+    } else if ("progress" in progress) {
+      percent = progress.progress <= 1 ? progress.progress * 100 : progress.progress;
+    } else if ("loaded" in progress && "total" in progress && progress.total > 0) {
+      percent = (progress.loaded / progress.total) * 100;
+    }
+  }
+
+  percent = Math.max(0, Math.min(100, Math.round(percent)));
+
+  ui.loadingBar.style.width = `${percent}%`;
+  ui.loadingText.textContent = `Converting IFC... ${percent}%`;
+}
+
+function hideLoadingOverlay() {
+  console.log("Hiding loading overlay");
+
+  ui.loadingOverlay.classList.add("is-hidden");
+  ui.loadingBar.style.width = "0%";
+  ui.loadingText.textContent = "Preparing file...";
+}
+
+ui.fileInput.addEventListener("change", () => {
+  const file = ui.fileInput.files[0];
+  const nameEl = document.getElementById("fileName");
+
+  nameEl.textContent = file ? file.name : "No file selected";
+});
 
 
