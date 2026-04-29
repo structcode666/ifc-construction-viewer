@@ -135,9 +135,9 @@ export function initSelection({
     await fragments.resetHighlight();
     await fragments.core.update(true);
 
-    if (onSelectionChanged) {
-      await onSelectionChanged();
-    }
+    // if (onSelectionChanged) {
+    //   await onSelectionChanged();
+    // }
 
     setStatus("Selection cleared.");
     setSelectionInfo("No element selected.");
@@ -155,9 +155,9 @@ export function initSelection({
     await fragments.highlight(selectionMaterial, modelIdMap);
     await fragments.core.update(true);
 
-    if (onSelectionChanged) {
-      await onSelectionChanged();
-    }
+    // if (onSelectionChanged) {
+    //   await onSelectionChanged();
+    // }
 
     const stats = getSelectionStats(modelIdMap);
 

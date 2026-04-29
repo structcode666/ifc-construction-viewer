@@ -26,7 +26,7 @@ async function startApp() {
   orbitControls = setup.orbitControls;
   fragments = setup.fragments;
 
-  selection = initSelection({ components, world, fragments, ui, onSelectionChanged: showCurrentSliderStage, });
+  selection = initSelection({ components, world, fragments, ui, });
 
   renderStagingUI();
 }
