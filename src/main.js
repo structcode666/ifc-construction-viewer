@@ -215,6 +215,8 @@ async function resetAllOpacity() {
   for (const [, model] of fragments.list) {
     await model.resetOpacity();
   }
+
+  await fragments.core.update(true);
 }
 
 async function setOpacityForItems(items, opacity) {
@@ -224,6 +226,8 @@ async function setOpacityForItems(items, opacity) {
 
     await model.setOpacity([...localIds], opacity);
   }
+
+  await fragments.core.update(true);
 }
 
 async function showCurrentSliderStage() {
