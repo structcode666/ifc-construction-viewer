@@ -5,6 +5,7 @@ import { setupWorld } from "./viewer/setupWorld.js";
 import { loadIfcFromFile } from "./viewer/loadIfc.js";
 import { initSelection } from "./viewer/selection.js";
 import { createStagingManager } from "./viewer/staging.js";
+import {initClipping, toggleClippingEnabled, clearClippingPlanes} from "./viewer/clipper.js";
 
 const ui = getUI();
 
@@ -27,6 +28,12 @@ async function startApp() {
   fragments = setup.fragments;
 
   selection = initSelection({ components, world, fragments, ui, });
+
+  await initClipping({
+  components,
+  world,
+  container: ui.viewerArea,
+  });
 
   renderStagingUI();
 }
@@ -74,7 +81,7 @@ ui.addStageButton.addEventListener("click", async () => {
   renderStagingUI();
   setSliderToStageIndex(staging.getStages().length - 1);
 
-  await showCurrentSliderStage();
+  // await showCurrentSliderStage();
 
   setStatus(`Created ${stage.name}.`);
   console.log("Created stage:", stage);
@@ -446,6 +453,27 @@ ui.fileInput.addEventListener("change", () => {
   const nameEl = document.getElementById("fileName");
 
   nameEl.textContent = file ? file.name : "No file selected";
+});
+
+//clipping plane event listeners//
+
+ui.toggleClippingButton.addEventListener("click", () => {
+  const enabled = toggleClippingEnabled();
+
+  ui.toggleClippingButton.textContent = enabled
+    ? "Exit Clipping Mode"
+    : "Enter Clipping Mode";
+
+  setStatus(
+    enabled
+      ? "Clipping mode active. Double-click the model to create a section cut."
+      : "Clipping mode off."
+  );
+});
+
+ui.clearClippingButton.addEventListener("click", () => {
+  clearClippingPlanes();
+  setStatus("Clipping planes cleared.");
 });
 
 

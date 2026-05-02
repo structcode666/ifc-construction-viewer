@@ -32,13 +32,14 @@
           <p><strong>Status:</strong> <span id="statusText">Waiting for file</span></p>
         </div>
 
-        <div id="selectionInfo">No element selected.</div>
+        <!-- <div id="selectionInfo">No element selected.</div> -->
 
         <div class="viewer-actions">
           <button id="hideSelectedButton">Hide Selected</button>
           <button id="isolateSelectedButton">Isolate Selected</button>
           <button id="resetVisibilityButton">Reset Visibility</button>
         </div>
+
 
         <button id="toggleMode">Switch to Sequencing</button>
 
@@ -71,10 +72,26 @@
       </aside>
 
       <main class="viewer-area">
-        <div class="viewer-toolbar">
-          <button id="toggleContextButton" class="viewer-context-button">
+        <div class="viewer-top-right-controls">
+          <button id="showContextButton" class="viewer-pill-button">
             Show Context
           </button>
+
+          <div class="section-cut-toolbar">
+            <div class="section-cut-title">Section Cuts</div>
+
+            <button id="toggleClippingButton" class="viewer-pill-button primary">
+              Enter Clipping Mode
+            </button>
+
+            <button id="clearClippingButton" class="viewer-pill-button">
+              Clear Clipping Planes
+            </button>
+
+            <p class="section-cut-hint">
+              Double-click model to cut.
+            </p>
+          </div>
         </div>
 
         <div id="loadingOverlay" class="loading-overlay is-hidden">

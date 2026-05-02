@@ -24,8 +24,7 @@ body {
 .sidebar {
   padding: 1.25rem;
   border-right: 1px solid rgba(148, 163, 184, 0.28);
-  background:
-    linear-gradient(180deg, #f8fafc 0%, #eef4fb 100%);
+  background: linear-gradient(180deg, #f8fafc 0%, #eef4fb 100%);
   overflow-y: auto;
 
   display: flex;
@@ -65,18 +64,45 @@ body {
 
 .file-label {
   display: block;
-  margin-bottom: 0.55rem;
-  font-weight: 700;
-  font-size: 0.85rem;
+  width: 100%;
+
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.6rem;
+
+  border-radius: 12px;
+  border: 1.5px dashed #cbd5e1;
+
+  background: rgba(248, 250, 252, 0.9);
   color: #334155;
+
+  font-weight: 600;
+  font-size: 0.9rem;
+  text-align: center;
+
+  cursor: pointer;
+
+  transition: all 0.15s ease;
 }
 
-input[type="file"] {
-  display: block;
-  width: 100%;
-  margin-bottom: 0.85rem;
-  font-size: 0.85rem;
-  color: #475569;
+.file-label:hover {
+  border-color: #2563eb;
+  background: rgba(37, 99, 235, 0.06);
+  color: #1e293b;
+}
+
+.file-label:active {
+  transform: scale(0.98);
+}
+
+.file-name {
+  font-size: 0.8rem;
+  color: #64748b;
+  text-align: center;
+  margin-bottom: 0.75rem;
+}
+
+#ifcFileInput {
+  display: none;
 }
 
 /* =========================
@@ -119,6 +145,33 @@ button:disabled {
   background: #94a3b8;
   box-shadow: none;
   transform: none;
+}
+
+#loadButton {
+  margin-top: 0.5rem;
+
+  background: linear-gradient(135deg, #2563eb, #22c55e);
+  color: white;
+
+  font-weight: 800;
+  letter-spacing: -0.01em;
+
+  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.25);
+}
+
+#loadButton:hover {
+  background: linear-gradient(135deg, #1d4ed8, #16a34a);
+  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.3);
+}
+
+#loadButton:active {
+  transform: translateY(1px);
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.2);
+}
+
+#loadButton:disabled {
+  background: #94a3b8;
+  box-shadow: none;
 }
 
 /* =========================
@@ -233,7 +286,29 @@ button:disabled {
 }
 
 /* =========================
-   VIEWER TOOLBAR
+   VIEWER TOP RIGHT CONTROLS
+========================= */
+
+.viewer-top-right-controls {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  z-index: 25;
+
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.75rem;
+
+  pointer-events: none;
+}
+
+.viewer-top-right-controls > * {
+  pointer-events: auto;
+}
+
+/* =========================
+   SHOW CONTEXT BUTTON
 ========================= */
 
 .viewer-toolbar {
@@ -245,21 +320,94 @@ button:disabled {
   gap: 0.75rem;
 }
 
-.viewer-context-button {
+.viewer-context-button,
+.viewer-pill-button {
   width: auto;
   min-width: 130px;
   border-radius: 999px;
   padding: 0.72rem 1.05rem;
+
   background: rgba(15, 23, 42, 0.82);
   color: white;
+
   border: 1px solid rgba(255, 255, 255, 0.18);
   backdrop-filter: blur(12px);
+
+  font-size: 0.78rem;
+  font-weight: 800;
+
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
 }
 
-.viewer-context-button:hover {
+.viewer-context-button:hover,
+.viewer-pill-button:hover {
   background: rgba(30, 41, 59, 0.92);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.32);
+}
+
+/* =========================
+   SECTION CUT VIEWER TOOL
+========================= */
+
+.section-cut-toolbar {
+  width: 230px;
+  padding: 0.85rem;
+
+  display: grid;
+  gap: 0.55rem;
+
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+
+  background: rgba(15, 23, 42, 0.78);
+  color: #f8fafc;
+
+  backdrop-filter: blur(14px);
+
+  box-shadow:
+    0 18px 45px rgba(0, 0, 0, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.section-cut-title {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #e2e8f0;
+}
+
+.section-cut-hint {
+  margin: 0.15rem 0 0;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #94a3b8;
+}
+
+.section-cut-toolbar .viewer-pill-button {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+
+  padding: 0.65rem 0.85rem;
+  border-radius: 12px;
+
+  font-size: 0.75rem;
+}
+
+.viewer-pill-button.primary {
+  background: linear-gradient(135deg, #2563eb, #1d4ed8);
+  border-color: rgba(96, 165, 250, 0.55);
+  color: #ffffff;
+}
+
+.viewer-pill-button.primary:hover {
+  background: linear-gradient(135deg, #1d4ed8, #1e40af);
+}
+
+/* Optional class you can add with JS later when clipping mode is active */
+.viewer-pill-button.is-active {
+  background: linear-gradient(135deg, #16a34a, #15803d);
+  border-color: rgba(74, 222, 128, 0.55);
 }
 
 /* =========================
@@ -323,74 +471,4 @@ button:disabled {
 
 .is-hidden {
   display: none;
-}
-
-#loadButton {
-  margin-top: 0.5rem;
-
-  background: linear-gradient(135deg, #2563eb, #22c55e);
-  color: white;
-
-  font-weight: 800;
-  letter-spacing: -0.01em;
-
-  box-shadow: 0 10px 22px rgba(37, 99, 235, 0.25);
-}
-
-#loadButton:hover {
-  background: linear-gradient(135deg, #1d4ed8, #16a34a);
-  box-shadow: 0 12px 26px rgba(37, 99, 235, 0.3);
-}
-
-#loadButton:active {
-  transform: translateY(1px);
-  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.2);
-}
-
-#loadButton:disabled {
-  background: #94a3b8;
-  box-shadow: none;
-}
-
-#ifcFileInput {
-  display: none;
-}
-
-.file-label {
-  display: block;
-  width: 100%;
-
-  padding: 0.75rem 1rem;
-  margin-bottom: 0.6rem;
-
-  border-radius: 12px;
-  border: 1.5px dashed #cbd5e1;
-
-  background: rgba(248, 250, 252, 0.9);
-  color: #334155;
-
-  font-weight: 600;
-  font-size: 0.9rem;
-  text-align: center;
-
-  cursor: pointer;
-
-  transition: all 0.15s ease;
-}
-
-.file-label:hover {
-  border-color: #2563eb;
-  background: rgba(37, 99, 235, 0.06);
-  color: #1e293b;
-}
-
-.file-label:active {
-  transform: scale(0.98);
-}
-
-.file-name {
-  font-size: 0.8rem;
-  color: #64748b;
-  text-align: center;
-  margin-bottom: 0.75rem;
 }
