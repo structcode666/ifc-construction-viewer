@@ -122,6 +122,7 @@ ui.assignStageButton.addEventListener("click", async () => {
   setSliderToStageIndex(currentStageIndex);
 
   await showCurrentSliderStage();
+  await selection.clearSelection();
 
   setStatus(`Assigned selection to ${currentStage.name}.`);
   console.log("Assigned selection:", currentStage.name);

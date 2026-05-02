@@ -397,5 +397,6 @@ export function initSelection({
 
   return {
     getSelectedItem,
+    clearSelection,
   };
 }
