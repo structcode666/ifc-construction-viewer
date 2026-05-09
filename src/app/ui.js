@@ -29,6 +29,10 @@ export function getUI() {
 
     toggleClippingButton: document.getElementById("toggleClippingButton"),
     clearClippingButton: document.getElementById("clearClippingButton"),
+
+
+    saveProjectButton: document.getElementById("saveProjectButton"),
+    projectFileInput: document.getElementById("projectFileInput"),
   };
 }
 

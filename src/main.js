@@ -5,7 +5,12 @@ import { setupWorld } from "./viewer/setupWorld.js";
 import { loadIfcFromFile } from "./viewer/loadIfc.js";
 import { initSelection } from "./viewer/selection.js";
 import { createStagingManager } from "./viewer/staging.js";
-import {initClipping, toggleClippingEnabled, clearClippingPlanes} from "./viewer/clipper.js";
+import {
+  initClipping,
+  toggleClippingEnabled,
+  clearClippingPlanes,
+} from "./viewer/clipper.js";
+import { saveProjectFile, readProjectFile } from "./app/projectStorage.js";
 
 const ui = getUI();
 
@@ -14,31 +19,43 @@ let world = null;
 let orbitControls = null;
 let fragments = null;
 let currentModel = null;
+let currentIfcFile = null;
 
 let selection = null;
 let mode = "staging";
 let showContext = false;
+
 const staging = createStagingManager();
 
 async function startApp() {
   const setup = await setupWorld(ui.viewerContainer);
+
   components = setup.components;
   world = setup.world;
   orbitControls = setup.orbitControls;
   fragments = setup.fragments;
 
-  selection = initSelection({ components, world, fragments, ui, });
+  selection = initSelection({
+    components,
+    world,
+    fragments,
+    ui,
+  });
 
   await initClipping({
-  components,
-  world,
-  container: ui.viewerArea,
+    components,
+    world,
+    container: ui.viewerArea,
   });
 
   renderStagingUI();
 }
 
 await startApp();
+
+// -----------------------------------------------------------------------------
+// Main IFC loading
+// -----------------------------------------------------------------------------
 
 ui.loadButton.addEventListener("click", async () => {
   const file = ui.fileInput.files[0];
@@ -47,6 +64,27 @@ ui.loadButton.addEventListener("click", async () => {
     setStatus("Please choose an IFC file first.");
     return;
   }
+
+  enterStagingMode();
+
+  const loadedModel = await loadIfcFileIntoViewer(file);
+
+  if (!loadedModel) {
+    return;
+  }
+
+  await resetViewerVisualState();
+
+  setStatus(`Loaded new IFC: ${file.name}`);
+});
+
+async function loadIfcFileIntoViewer(file) {
+  if (!file) {
+    setStatus("No IFC file provided.");
+    return null;
+  }
+
+  currentIfcFile = file;
 
   showLoadingOverlay();
 
@@ -59,20 +97,35 @@ ui.loadButton.addEventListener("click", async () => {
       updateLoadingProgress
     );
 
-    await world.camera.fitToItems();
+    await waitForFragmentsReady();
+    await resetViewerVisualState();
+    await waitForFragmentsReady();
 
-    orbitControls.target.set(0, 0, 0);
-    orbitControls.update();
+    ui.saveProjectButton.disabled = false;
+
+    try {
+      await world.camera.fitToItems();
+      await fragments.core.update(true);
+    } catch (cameraError) {
+      console.warn("Model loaded, but camera fit failed:", cameraError);
+    }
 
     setStatus(`Loaded: ${file.name}`);
     console.log("Loaded model:", currentModel);
+
+    return currentModel;
   } catch (error) {
-    console.error(error);
+    console.error("Failed inside loadIfcFileIntoViewer:", error);
     setStatus("Failed to load IFC file.");
+    return null;
   } finally {
     hideLoadingOverlay();
   }
-});
+}
+
+// -----------------------------------------------------------------------------
+// Stage controls
+// -----------------------------------------------------------------------------
 
 ui.addStageButton.addEventListener("click", async () => {
   const stageNumber = staging.getStages().length + 1;
@@ -80,8 +133,6 @@ ui.addStageButton.addEventListener("click", async () => {
 
   renderStagingUI();
   setSliderToStageIndex(staging.getStages().length - 1);
-
-  // await showCurrentSliderStage();
 
   setStatus(`Created ${stage.name}.`);
   console.log("Created stage:", stage);
@@ -111,7 +162,10 @@ ui.assignStageButton.addEventListener("click", async () => {
     return;
   }
 
-  const result = staging.assignSelectionToStage(currentStage.id, currentSelection);
+  const result = staging.assignSelectionToStage(
+    currentStage.id,
+    currentSelection
+  );
 
   if (!result.ok) {
     setStatus(`Stage assignment failed: ${result.reason}`);
@@ -133,39 +187,20 @@ ui.stageSlider.addEventListener("input", async () => {
   await showCurrentSliderStage();
 });
 
-ui.resetVisibilityButton.addEventListener("click", async () => {
-  try {
-    await components.get(OBC.Hider).set(true);
-    await resetAllOpacity();
-    setStatus("Visibility reset.");
-  } catch (error) {
-    console.error("Reset visibility failed:", error);
-    setStatus("Failed to reset visibility.");
-  }
-});
-
 ui.toggleModeButton.addEventListener("click", async () => {
   if (mode === "staging") {
-    mode = "sequencing";
-    ui.toggleModeButton.textContent = "Switch to Staging";
-
-    ui.stagingTimeline.classList.remove("is-hidden");
+    enterSequencingMode();
 
     await showCurrentSliderStage();
     setStatus("Sequencing mode enabled.");
-  } else {
-    mode = "staging";
-    ui.toggleModeButton.textContent = "Switch to Sequencing";
-
-    ui.stagingTimeline.classList.add("is-hidden");
-
-    await components.get(OBC.Hider).set(true);
-    setStatus("Staging mode enabled (full model visible).");
+    return;
   }
+
+  enterStagingMode();
+
+  await resetViewerVisualState();
+  setStatus("Staging mode enabled (full model visible).");
 });
-function setSliderToStageIndex(index) {
-  ui.stageSlider.value = String(index);
-}
 
 ui.toggleContextButton.addEventListener("click", async () => {
   showContext = !showContext;
@@ -177,10 +212,213 @@ ui.toggleContextButton.addEventListener("click", async () => {
   await showCurrentSliderStage();
 });
 
+ui.resetVisibilityButton.addEventListener("click", async () => {
+  try {
+    await resetViewerVisualState();
+    setStatus("Visibility reset.");
+  } catch (error) {
+    console.error("Reset visibility failed:", error);
+    setStatus("Failed to reset visibility.");
+  }
+});
+
+// -----------------------------------------------------------------------------
+// Project save / open
+// -----------------------------------------------------------------------------
+
+ui.saveProjectButton.addEventListener("click", async () => {
+  if (!currentIfcFile) {
+    setStatus("Load an IFC file before saving the project.");
+    return;
+  }
+
+  try {
+    const stagingSnapshot = staging.createSnapshot();
+    console.log("Staging snapshot:", stagingSnapshot);
+
+    const projectName = currentIfcFile.name.replace(/\.ifc$/i, "");
+
+    await saveProjectFile({
+      ifcFile: currentIfcFile,
+      stagingSnapshot,
+      projectName,
+    });
+
+    setStatus("Project saved.");
+  } catch (error) {
+    console.error("Failed to save project:", error);
+    setStatus("Failed to save project.");
+  }
+});
+
+ui.projectFileInput.addEventListener("change", async () => {
+  console.log("1. Project file input changed");
+
+  const projectFile = ui.projectFileInput.files[0];
+
+  console.log("2. Selected project file:", projectFile);
+
+  if (!projectFile) {
+    console.log("No project file selected. Stopping.");
+    return;
+  }
+
+  try {
+    setStatus("Opening project file...");
+    console.log("3. About to read project file");
+
+    const projectData = await readProjectFile(projectFile);
+
+    console.log("4. Project file read successfully:", projectData);
+    console.log(
+      "5. Project stage count:",
+      projectData.stagingSnapshot?.stages?.length
+    );
+
+    console.log("6. About to load extracted IFC file");
+
+    const loadedModel = await loadIfcFileIntoViewer(projectData.ifcFile);
+
+    console.log("7. Extracted IFC load finished:", loadedModel);
+
+    if (!loadedModel) {
+      console.log("Loaded model was null. Stopping before restore.");
+      setStatus("Project file was read, but the IFC model could not be loaded.");
+      return;
+    }
+
+    await waitForFragmentsReady();
+    await resetViewerVisualState();
+
+    console.log("8. About to restore staging snapshot");
+
+    const restoreResult = staging.restoreFromSnapshot(
+      projectData.stagingSnapshot
+    );
+
+    console.log("9. RESTORE RESULT:", restoreResult);
+
+    if (!restoreResult.ok) {
+      setStatus(
+        `Project opened, but staging could not be restored: ${restoreResult.reason}`
+      );
+      return;
+    }
+
+    renderStagingUI();
+    enterSequencingMode();
+
+    const didSetSlider = setSliderToStageId(
+      projectData.stagingSnapshot.activeStageId
+    );
+
+    if (!didSetSlider) {
+      setSliderToStageIndex(0);
+    }
+
+    await waitForFragmentsReady();
+
+    console.log("17. About to show current slider stage");
+
+    await showCurrentSliderStage();
+
+    console.log("18. Project open workflow complete");
+
+    setStatus(`Opened project: ${projectData.manifest.ifcFileName}`);
+  } catch (error) {
+    console.error("FAILED SOMEWHERE IN OPEN PROJECT WORKFLOW:", error);
+    setStatus("Failed to open project file.");
+  }
+});
+
+// -----------------------------------------------------------------------------
+// Clipping controls
+// -----------------------------------------------------------------------------
+
+ui.toggleClippingButton.addEventListener("click", () => {
+  const enabled = toggleClippingEnabled();
+
+  ui.toggleClippingButton.textContent = enabled
+    ? "Exit Clipping Mode"
+    : "Enter Clipping Mode";
+
+  setStatus(
+    enabled
+      ? "Clipping mode active. Double-click the model to create a section cut."
+      : "Clipping mode off."
+  );
+});
+
+ui.clearClippingButton.addEventListener("click", () => {
+  clearClippingPlanes();
+  setStatus("Clipping planes cleared.");
+});
+
+// -----------------------------------------------------------------------------
+// File input UI
+// -----------------------------------------------------------------------------
+
+ui.fileInput.addEventListener("change", () => {
+  const file = ui.fileInput.files[0];
+  const nameEl = document.getElementById("fileName");
+
+  nameEl.textContent = file ? file.name : "No file selected";
+});
+
+// -----------------------------------------------------------------------------
+// Viewer state helpers
+// -----------------------------------------------------------------------------
+
+function enterStagingMode() {
+  mode = "staging";
+  showContext = false;
+
+  ui.toggleModeButton.textContent = "Switch to Sequencing";
+  ui.stagingTimeline.classList.add("is-hidden");
+  ui.toggleContextButton.textContent = "Show Context";
+}
+
+function enterSequencingMode() {
+  mode = "sequencing";
+
+  ui.toggleModeButton.textContent = "Switch to Staging";
+  ui.stagingTimeline.classList.remove("is-hidden");
+}
+
+async function resetViewerVisualState() {
+  const hider = components.get(OBC.Hider);
+
+  await hider.set(true);
+  await resetAllOpacity();
+  await fragments.core.update(true);
+}
+
+async function resetAllOpacity() {
+  for (const [, model] of fragments.list) {
+    await model.resetOpacity();
+  }
+
+  await fragments.core.update(true);
+}
+
+async function waitForFragmentsReady() {
+  await fragments.core.update(true);
+
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+
+  await fragments.core.update(true);
+}
+
+// -----------------------------------------------------------------------------
+// Visibility / opacity helpers
+// -----------------------------------------------------------------------------
+
 function isModelIdMapEmpty(modelIdMap) {
   if (!modelIdMap) return true;
 
   const modelIds = Object.keys(modelIdMap);
+
   if (modelIds.length === 0) return true;
 
   for (const modelId of modelIds) {
@@ -227,17 +465,10 @@ function subtractModelIdMap(allItems, itemsToRemove) {
   return result;
 }
 
-async function resetAllOpacity() {
-  for (const [, model] of fragments.list) {
-    await model.resetOpacity();
-  }
-
-  await fragments.core.update(true);
-}
-
 async function setOpacityForItems(items, opacity) {
   for (const [modelId, localIds] of Object.entries(items)) {
     const model = fragments.list.get(modelId);
+
     if (!model) continue;
 
     await model.setOpacity([...localIds], opacity);
@@ -253,7 +484,7 @@ async function showCurrentSliderStage() {
     updateStageLabel(null, 0, 0);
 
     try {
-      await components.get(OBC.Hider).set(true);
+      await resetViewerVisualState();
     } catch (error) {
       console.error("Failed to reset visibility with no stages:", error);
     }
@@ -273,17 +504,16 @@ async function showCurrentSliderStage() {
 
   if (mode === "staging") {
     try {
-      const hider = components.get(OBC.Hider);
-
-      await hider.set(true);
-      await resetAllOpacity();
+      await resetViewerVisualState();
 
       if (showContext) {
         const assignedItems = mergeAllStageItems();
 
         if (!isModelIdMapEmpty(assignedItems)) {
           await setOpacityForItems(assignedItems, 0.15);
-          setStatus("Staging mode: assigned elements shown as transparent context.");
+          setStatus(
+            "Staging mode: assigned elements shown as transparent context."
+          );
           return;
         }
 
@@ -305,26 +535,41 @@ async function showCurrentSliderStage() {
 
   const itemsToShow = staging.getActiveStageSelection();
 
+  console.log("showCurrentSliderStage mode:", mode);
+  console.log("showCurrentSliderStage stage:", stage);
+  console.log("itemsToShow:", itemsToShow);
+  console.log("itemsToShow model IDs:", Object.keys(itemsToShow ?? {}));
+  console.log("loaded fragment model IDs:", [...fragments.list.keys()]);
+  console.log("itemsToShow empty?", isModelIdMapEmpty(itemsToShow));
+
   if (isModelIdMapEmpty(itemsToShow)) {
     try {
-      await components.get(OBC.Hider).set(true);
+      await resetViewerVisualState();
       setStatus(`${stage.name} is empty. Showing full model.`);
     } catch (error) {
       console.error("Failed to show full model for empty stage:", error);
       setStatus("Failed to update stage view.");
     }
+
     return;
   }
 
-try {
-  const hider = components.get(OBC.Hider);
+  try {
+    const hider = components.get(OBC.Hider);
 
-  await resetAllOpacity();
+    await resetAllOpacity();
 
-  if (!showContext) {
-    await hider.isolate(itemsToShow);
-    setStatus(`Showing cumulative view up to ${stage.name}.`);
-  } else {
+    if (!showContext) {
+      console.log("About to isolate items:", itemsToShow);
+
+      await hider.isolate(itemsToShow);
+      await fragments.core.update(true);
+
+      console.log("Finished isolating items.");
+      setStatus(`Showing cumulative view up to ${stage.name}.`);
+      return;
+    }
+
     await hider.set(true);
 
     const allItems = await getAllGeometryItems();
@@ -333,11 +578,29 @@ try {
     await setOpacityForItems(contextItems, 0.15);
 
     setStatus(`Showing ${stage.name} with transparent context.`);
+  } catch (error) {
+    console.error("Failed to show stage:", error);
+    setStatus("Failed to update stage view.");
   }
-} catch (error) {
-  console.error("Failed to show stage:", error);
-  setStatus("Failed to update stage view.");
 }
+
+// -----------------------------------------------------------------------------
+// Staging UI helpers
+// -----------------------------------------------------------------------------
+
+function setSliderToStageIndex(index) {
+  ui.stageSlider.value = String(index);
+}
+
+function setSliderToStageId(stageId) {
+  const stages = staging.getStages();
+
+  const index = stages.findIndex((stage) => stage.id === stageId);
+
+  if (index === -1) return false;
+
+  setSliderToStageIndex(index);
+  return true;
 }
 
 function renderStagingUI() {
@@ -360,9 +623,11 @@ function renderStagingUI() {
 
   const currentValue = Number(ui.stageSlider.value);
   const clampedValue = Math.min(currentValue, stages.length - 1);
+
   ui.stageSlider.value = String(clampedValue);
 
   const activeStage = stages[clampedValue];
+
   updateStageLabel(activeStage, clampedValue, stages.length);
   renderStageSummary(stages);
 }
@@ -408,7 +673,9 @@ function mergeAllStageItems() {
   return merged;
 }
 
-//progress bar helpers//
+// -----------------------------------------------------------------------------
+// Loading overlay helpers
+// -----------------------------------------------------------------------------
 
 function showLoadingOverlay() {
   ui.loadingOverlay.classList.remove("is-hidden");
@@ -429,8 +696,13 @@ function updateLoadingProgress(progress) {
     if ("percentage" in progress) {
       percent = progress.percentage;
     } else if ("progress" in progress) {
-      percent = progress.progress <= 1 ? progress.progress * 100 : progress.progress;
-    } else if ("loaded" in progress && "total" in progress && progress.total > 0) {
+      percent =
+        progress.progress <= 1 ? progress.progress * 100 : progress.progress;
+    } else if (
+      "loaded" in progress &&
+      "total" in progress &&
+      progress.total > 0
+    ) {
       percent = (progress.loaded / progress.total) * 100;
     }
   }
@@ -448,33 +720,3 @@ function hideLoadingOverlay() {
   ui.loadingBar.style.width = "0%";
   ui.loadingText.textContent = "Preparing file...";
 }
-
-ui.fileInput.addEventListener("change", () => {
-  const file = ui.fileInput.files[0];
-  const nameEl = document.getElementById("fileName");
-
-  nameEl.textContent = file ? file.name : "No file selected";
-});
-
-//clipping plane event listeners//
-
-ui.toggleClippingButton.addEventListener("click", () => {
-  const enabled = toggleClippingEnabled();
-
-  ui.toggleClippingButton.textContent = enabled
-    ? "Exit Clipping Mode"
-    : "Enter Clipping Mode";
-
-  setStatus(
-    enabled
-      ? "Clipping mode active. Double-click the model to create a section cut."
-      : "Clipping mode off."
-  );
-});
-
-ui.clearClippingButton.addEventListener("click", () => {
-  clearClippingPlanes();
-  setStatus("Clipping planes cleared.");
-});
-
-

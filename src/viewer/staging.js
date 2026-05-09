@@ -21,6 +21,30 @@ export function createStagingManager() {
     return clone;
   }
 
+  function modelIdMapToSerializable(modelIdMap) {
+    if (!modelIdMap) return {};
+
+    const serializable = {};
+
+    for (const modelId of Object.keys(modelIdMap)) {
+      serializable[modelId] = [...modelIdMap[modelId]];
+    }
+
+    return serializable;
+  } 
+
+  function serializableToModelIdMap(serializableMap) {
+    if (!serializableMap) return {};
+
+    const modelIdMap = {};
+
+    for (const modelId of Object.keys(serializableMap)) {
+      modelIdMap[modelId] = new Set(serializableMap[modelId]);
+    }
+
+    return modelIdMap;
+}
+
   function isSelectionEmpty(modelIdMap) {
     if (!modelIdMap) return true;
 
@@ -237,6 +261,49 @@ export function createStagingManager() {
     return total;
   }
 
+  function createSnapshot() {
+    return {
+      snapshotVersion: 1,
+      activeStageId: state.activeStageId,
+      viewMode: state.viewMode,
+      stages: state.stages.map((stage) => ({
+        id: stage.id,
+        name: stage.name,
+        items: modelIdMapToSerializable(stage.items),
+      })),
+    };
+  }
+
+  function restoreFromSnapshot(snapshot) {
+    if (!snapshot || !Array.isArray(snapshot.stages)) {
+      return {
+        ok: false,
+        reason: "Invalid staging snapshot.",
+      };
+    }
+
+    state.stages = snapshot.stages.map((stage, index) => ({
+      id: stage.id || generateStageId(),
+      name: stage.name || `Stage ${index + 1}`,
+      items: serializableToModelIdMap(stage.items),
+    }));
+
+    const activeStageExists = state.stages.some(
+      (stage) => stage.id === snapshot.activeStageId
+    );
+
+    state.activeStageId = activeStageExists ? snapshot.activeStageId : null;
+
+    state.viewMode =
+      snapshot.viewMode === "single" || snapshot.viewMode === "cumulative"
+        ? snapshot.viewMode
+        : "single";
+
+    return {
+      ok: true,
+    };
+}
+
   function debugState() {
     return {
       activeStageId: state.activeStageId,
@@ -248,6 +315,8 @@ export function createStagingManager() {
       })),
     };
   }
+
+
 
   return {
     createStage,
@@ -264,6 +333,8 @@ export function createStagingManager() {
     clearActiveStage,
     setViewMode,
     getActiveStageSelection,
+    createSnapshot,
+    restoreFromSnapshot,
     debugState,
   };
 }
