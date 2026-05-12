@@ -9,6 +9,10 @@ export function createStagingManager() {
     return `stage-${crypto.randomUUID()}`;
   }
 
+  function getActiveStageId() {
+    return state.activeStageId;
+  } 
+
   function cloneModelIdMap(modelIdMap) {
     if (!modelIdMap) return {};
 
@@ -121,26 +125,53 @@ export function createStagingManager() {
 
   function renameStage(stageId, newName) {
     const stage = getStageById(stageId);
-    if (!stage) return false;
+
+    if (!stage) {
+      return {
+        ok: false,
+        reason: "Stage not found.",
+      };
+    }
 
     const trimmedName = newName?.trim();
-    if (!trimmedName) return false;
+
+    if (!trimmedName) {
+      return {
+        ok: false,
+        reason: "Stage name cannot be empty.",
+      };
+    }
 
     stage.name = trimmedName;
-    return true;
+
+    return {
+      ok: true,
+      stage,
+    };
   }
 
   function deleteStage(stageId) {
     const index = state.stages.findIndex((stage) => stage.id === stageId);
-    if (index === -1) return false;
 
-    state.stages.splice(index, 1);
-
-    if (state.activeStageId === stageId) {
-      state.activeStageId = null;
+    if (index === -1) {
+      return {
+        ok: false,
+        reason: "Stage not found.",
+      };
     }
 
-    return true;
+    const [deletedStage] = state.stages.splice(index, 1);
+
+    if (state.activeStageId === stageId) {
+      const nextStage = state.stages[index] ?? state.stages[index - 1] ?? null;
+      state.activeStageId = nextStage ? nextStage.id : null;
+    }
+
+    return {
+      ok: true,
+      deletedStage,
+      activeStageId: state.activeStageId,
+    };
   }
 
   function assignSelectionToStage(stageId, selection) {
@@ -167,10 +198,20 @@ export function createStagingManager() {
 
   function clearStage(stageId) {
     const stage = getStageById(stageId);
-    if (!stage) return false;
+
+    if (!stage) {
+      return {
+        ok: false,
+        reason: "Stage not found.",
+      };
+    }
 
     stage.items = {};
-    return true;
+
+    return {
+      ok: true,
+      stage,
+    };
   }
 
   function getStageSelection(stageId) {
@@ -336,5 +377,6 @@ export function createStagingManager() {
     createSnapshot,
     restoreFromSnapshot,
     debugState,
+    getActiveStageId,
   };
 }

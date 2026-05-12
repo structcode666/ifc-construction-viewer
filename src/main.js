@@ -187,6 +187,114 @@ ui.stageSlider.addEventListener("input", async () => {
   await showCurrentSliderStage();
 });
 
+ui.renameStageButton.addEventListener("click", () => {
+  const activeStageId = staging.getActiveStageId();
+
+  if (!activeStageId) {
+    setStatus("No active stage selected.");
+    return;
+  }
+
+  const stage = staging.getStageById(activeStageId);
+
+  if (!stage) {
+    setStatus("Active stage could not be found.");
+    return;
+  }
+
+  const newName = prompt("Enter new stage name:", stage.name);
+
+  if (newName === null) {
+    return;
+  }
+
+  const result = staging.renameStage(activeStageId, newName);
+
+  if (!result.ok) {
+    setStatus(result.reason);
+    return;
+  }
+
+  renderStagingUI();
+  setStatus(`Renamed stage to "${result.stage.name}".`);
+});
+
+ui.clearStageButton.addEventListener("click", async () => {
+  const activeStageId = staging.getActiveStageId();
+
+  if (!activeStageId) {
+    setStatus("No active stage selected.");
+    return;
+  }
+
+  const stage = staging.getStageById(activeStageId);
+
+  if (!stage) {
+    setStatus("Active stage could not be found.");
+    return;
+  }
+
+  const confirmed = confirm(
+    `Clear all assigned elements from "${stage.name}"?`
+  );
+
+  if (!confirmed) {
+    return;
+  }
+
+  const result = staging.clearStage(activeStageId);
+
+  if (!result.ok) {
+    setStatus(result.reason);
+    return;
+  }
+
+  renderStagingUI();
+  await showCurrentSliderStage();
+
+  setStatus(`Cleared all assigned elements from "${result.stage.name}".`);
+});
+
+ui.deleteStageButton.addEventListener("click", async () => {
+  const activeStageId = staging.getActiveStageId();
+
+  if (!activeStageId) {
+    setStatus("No active stage selected.");
+    return;
+  }
+
+  const stage = staging.getStageById(activeStageId);
+
+  if (!stage) {
+    setStatus("Active stage could not be found.");
+    return;
+  }
+
+  const confirmed = confirm(
+    `Delete "${stage.name}"? This cannot be undone.`
+  );
+
+  if (!confirmed) {
+    return;
+  }
+
+  const result = staging.deleteStage(activeStageId);
+
+  if (!result.ok) {
+    setStatus(result.reason);
+    return;
+  }
+
+  if (result.activeStageId) {
+    setSliderToStageId(result.activeStageId);
+  }
+
+  renderStagingUI();
+  await showCurrentSliderStage();
+
+  setStatus(`Deleted "${result.deletedStage.name}".`);
+});
+
 ui.toggleModeButton.addEventListener("click", async () => {
   if (mode === "staging") {
     enterSequencingMode();
@@ -221,6 +329,8 @@ ui.resetVisibilityButton.addEventListener("click", async () => {
     setStatus("Failed to reset visibility.");
   }
 });
+
+
 
 // -----------------------------------------------------------------------------
 // Project save / open
@@ -501,6 +611,7 @@ async function showCurrentSliderStage() {
   }
 
   updateStageLabel(stage, stageIndex, stages.length);
+  staging.setActiveStage(stage.id);
 
   if (mode === "staging") {
     try {
@@ -530,7 +641,7 @@ async function showCurrentSliderStage() {
     return;
   }
 
-  staging.setActiveStage(stage.id);
+  
   staging.setViewMode("cumulative");
 
   const itemsToShow = staging.getActiveStageSelection();

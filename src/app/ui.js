@@ -33,6 +33,11 @@ export function getUI() {
 
     saveProjectButton: document.getElementById("saveProjectButton"),
     projectFileInput: document.getElementById("projectFileInput"),
+
+
+    renameStageButton: document.getElementById("rename-stage-button"),
+    clearStageButton: document.getElementById("clear-stage-button"),
+    deleteStageButton: document.getElementById("delete-stage-button"),
   };
 }
 
