@@ -41,6 +41,8 @@ export function getUI() {
 
     saveStageViewButton: document.getElementById("save-stage-view-button"),
     restoreStageViewButton: document.getElementById("restore-stage-view-button"),
+
+    createLiftButton: document.getElementById("create-lift-button"),
   };
 }
 

@@ -321,6 +321,72 @@ button:disabled {
 }
 
 /* =========================
+   STAGE SUMMARY + LIFT SUMMARY
+========================= */
+
+.stage-summary-block {
+  padding: 0.7rem 0.75rem;
+  margin-top: 0.6rem;
+
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.stage-summary-block:first-child {
+  margin-top: 0.75rem;
+}
+
+.stage-summary-row {
+  font-size: 0.88rem;
+  font-weight: 800;
+  line-height: 1.45;
+  color: #0f172a;
+}
+
+.lift-summary-list {
+  margin-top: 0.55rem;
+  margin-left: 0.35rem;
+  padding-left: 0.75rem;
+
+  border-left: 2px solid rgba(37, 99, 235, 0.22);
+}
+
+.lift-summary-row {
+  position: relative;
+
+  padding: 0.28rem 0 0.28rem 0.35rem;
+
+  font-size: 0.84rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: #334155;
+}
+
+.lift-summary-row::before {
+  content: "";
+  position: absolute;
+
+  left: -0.76rem;
+  top: 50%;
+
+  width: 0.52rem;
+  height: 1px;
+
+  background: rgba(37, 99, 235, 0.32);
+}
+
+.lift-summary-empty {
+  padding: 0.25rem 0 0.25rem 0.35rem;
+
+  font-size: 0.82rem;
+  font-style: italic;
+  line-height: 1.4;
+  color: #64748b;
+}
+
+/* =========================
    STAGE EDIT ACTIONS
 ========================= */
 

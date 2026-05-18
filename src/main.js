@@ -29,6 +29,10 @@ let viewpoints = null;
 
 const staging = createStagingManager();
 
+// Temporary debug helper so we can inspect staging from DevTools
+window.staging = staging;
+
+
 async function startApp() {
   const setup = await setupWorld(ui.viewerContainer);
 
@@ -188,6 +192,38 @@ ui.assignStageButton.addEventListener("click", async () => {
   setStatus(`Assigned selection to ${currentStage.name}.`);
   console.log("Assigned selection:", currentStage.name);
   console.log("Staging state:", staging.debugState());
+});
+
+ui.createLiftButton.addEventListener("click", async () => {
+  const activeStageId = staging.getActiveStageId();
+
+  if (!activeStageId) {
+    setStatus("Create a stage or select an active stage first.");
+    return;
+  }
+
+  const currentSelection = selection.getSelectedItem();
+
+  const result = staging.createLiftFromSelection(
+    activeStageId,
+    currentSelection
+  );
+
+  if (!result.ok) {
+    setStatus(result.reason);
+    return;
+  }
+
+  setStatus(`${result.lift.name} created.`);
+
+  renderStagingUI();
+  renderStageSummary(staging.getStages());
+
+  await showCurrentSliderStage();
+  await selection.clearSelection();
+
+  console.log("Lift created:", result.lift);
+  console.log("Updated staging state:", staging.debugState());
 });
 
 ui.stageSlider.addEventListener("input", async () => {
@@ -767,7 +803,30 @@ function renderStageSummary(stages) {
 
   ui.stageSummary.innerHTML = stages
     .map((stage, index) => {
-      return `<div>Stage ${index + 1}: ${stage.name} (${stage.itemCount} items)</div>`;
+      const liftsHtml =
+        stage.lifts.length > 0
+          ? stage.lifts
+              .map((lift) => {
+                return `
+                  <div class="lift-summary-row">
+                    ${lift.name} (${lift.itemCount} items)
+                  </div>
+                `;
+              })
+              .join("")
+          : `<div class="lift-summary-empty">No lifts yet</div>`;
+
+      return `
+        <div class="stage-summary-block">
+          <div class="stage-summary-row">
+            Stage ${index + 1}: ${stage.name} (${stage.itemCount} items)
+          </div>
+
+          <div class="lift-summary-list">
+            ${liftsHtml}
+          </div>
+        </div>
+      `;
     })
     .join("");
 }

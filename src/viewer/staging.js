@@ -9,6 +9,10 @@ export function createStagingManager() {
     return `stage-${crypto.randomUUID()}`;
   }
 
+  function generateLiftId() {
+    return `lift-${crypto.randomUUID()}`;
+  }
+
   function getActiveStageId() {
     return state.activeStageId;
   } 
@@ -98,6 +102,16 @@ export function createStagingManager() {
     }
   }
 
+  function removeSelectionFromAllLifts(selection) {
+    if (isSelectionEmpty(selection)) return;
+
+    for (const stage of state.stages) {
+      for (const lift of stage.lifts ?? []) {
+        removeModelIdMapFromStageItems(lift.items, selection);
+      }
+    }
+  }
+
   function removeSelectionFromAllStages(selection) {
     if (isSelectionEmpty(selection)) return;
 
@@ -114,6 +128,7 @@ export function createStagingManager() {
       name: trimmedName || `Stage ${state.stages.length + 1}`,
       items: {},
       view: null,
+      lifts: [],
     };
 
     state.stages.push(stage);
@@ -197,6 +212,56 @@ export function createStagingManager() {
     return { ok: true, stage };
   }
 
+  function createLiftFromSelection(stageId, selection) {
+    if (isSelectionEmpty(selection)) {
+      return {
+        ok: false,
+        reason: "Selection is empty.",
+      };
+    }
+
+    const stage = getStageById(stageId);
+
+    if (!stage) {
+      return {
+        ok: false,
+        reason: "Stage not found.",
+      };
+    }
+
+    // Defensive safety:
+    // older data or unexpected state should still work.
+    if (!Array.isArray(stage.lifts)) {
+      stage.lifts = [];
+    }
+
+    // Creating a lift also means these elements belong to this stage.
+    // This reuses your existing stage assignment rule:
+    // an element can belong to only one stage at a time.
+    assignSelectionToStage(stageId, selection);
+
+    // A selected element should only belong to one lift at a time.
+    // Remove it from any previous lift before adding it to the new one.
+    removeSelectionFromAllLifts(selection);
+
+    const lift = {
+      id: generateLiftId(),
+      name: getNextLiftName(stage),
+      items: cloneModelIdMap(selection),
+      label: {
+        position: null,
+      },
+    };
+
+    stage.lifts.push(lift);
+
+    return {
+      ok: true,
+      stage,
+      lift,
+    };
+  }
+
   function clearStage(stageId) {
     const stage = getStageById(stageId);
 
@@ -208,6 +273,7 @@ export function createStagingManager() {
     }
 
     stage.items = {};
+    stage.lifts = [];
 
     return {
       ok: true,
@@ -288,6 +354,12 @@ export function createStagingManager() {
       id: stage.id,
       name: stage.name,
       itemCount: countItemsInModelIdMap(stage.items),
+
+      lifts: (stage.lifts ?? []).map((lift) => ({
+        id: lift.id,
+        name: lift.name,
+        itemCount: countItemsInModelIdMap(lift.items),
+      })),
     }));
   }
 
@@ -305,7 +377,7 @@ export function createStagingManager() {
 
   function createSnapshot() {
     return {
-      snapshotVersion: 1,
+      snapshotVersion: 2,
       activeStageId: state.activeStageId,
       viewMode: state.viewMode,
       stages: state.stages.map((stage) => ({
@@ -313,6 +385,15 @@ export function createStagingManager() {
         name: stage.name,
         items: modelIdMapToSerializable(stage.items),
         view: stage.view ?? null,
+
+        lifts: (stage.lifts ?? []).map((lift) => ({
+          id: lift.id,
+          name: lift.name,
+          items: modelIdMapToSerializable(lift.items),
+          label: lift.label ?? {
+            position: null,
+          },
+        })),
       })),
     };
   }
@@ -330,6 +411,17 @@ export function createStagingManager() {
       name: stage.name || `Stage ${index + 1}`,
       items: serializableToModelIdMap(stage.items),
       view: stage.view ?? null,
+
+      lifts: Array.isArray(stage.lifts)
+        ? stage.lifts.map((lift, liftIndex) => ({
+            id: lift.id || generateLiftId(),
+            name: lift.name || `LIFT ${liftIndex + 1}`,
+            items: serializableToModelIdMap(lift.items),
+            label: lift.label ?? {
+              position: null,
+            },
+          }))
+        : [],
     }));
 
     const activeStageExists = state.stages.some(
@@ -357,6 +449,7 @@ export function createStagingManager() {
         name: stage.name,
         items: cloneModelIdMap(stage.items),
         view: stage.view ?? null,
+        lifts: stage.lifts ?? [],
       })),
     };
   }
@@ -396,6 +489,19 @@ export function createStagingManager() {
     return stage.view ?? null;
   }
 
+  function getNextLiftName(stage) {
+    const liftNumbers = stage.lifts
+      .map((lift) => {
+        const match = lift.name?.match(/^LIFT\s+(\d+)$/i);
+        return match ? Number(match[1]) : null;
+      })
+      .filter((number) => number !== null);
+
+    const highestLiftNumber =
+      liftNumbers.length > 0 ? Math.max(...liftNumbers) : 0;
+
+    return `LIFT ${highestLiftNumber + 1}`;
+  }
 
   return {
     createStage,
@@ -405,6 +511,7 @@ export function createStagingManager() {
     deleteStage,
     moveStage,
     assignSelectionToStage,
+    createLiftFromSelection,
     clearStage,
     getStageSelection,
     getCumulativeSelection,
