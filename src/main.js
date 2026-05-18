@@ -25,6 +25,8 @@ let selection = null;
 let mode = "staging";
 let showContext = false;
 
+let viewpoints = null;
+
 const staging = createStagingManager();
 
 async function startApp() {
@@ -34,6 +36,9 @@ async function startApp() {
   world = setup.world;
   orbitControls = setup.orbitControls;
   fragments = setup.fragments;
+
+  viewpoints = components.get(OBC.Viewpoints);
+  viewpoints.world = world;
 
   selection = initSelection({
     components,
@@ -130,6 +135,8 @@ async function loadIfcFileIntoViewer(file) {
 ui.addStageButton.addEventListener("click", async () => {
   const stageNumber = staging.getStages().length + 1;
   const stage = staging.createStage(`Stage ${stageNumber}`);
+
+  staging.setActiveStage(stage.id);
 
   renderStagingUI();
   setSliderToStageIndex(staging.getStages().length - 1);
@@ -831,3 +838,77 @@ function hideLoadingOverlay() {
   ui.loadingBar.style.width = "0%";
   ui.loadingText.textContent = "Preparing file...";
 }
+
+
+ui.saveStageViewButton.addEventListener("click", async () => {
+  const activeStageId = staging.getActiveStageId();
+
+  if (!activeStageId) {
+    setStatus("No active stage selected.");
+    return;
+  }
+
+  const stage = staging.getStageById(activeStageId);
+
+  if (!stage) {
+    setStatus("Active stage could not be found.");
+    return;
+  }
+
+  const viewpoint = viewpoints.create();
+  viewpoint.title = `${stage.name} Saved View`;
+
+  await viewpoint.updateCamera(false);
+
+  const viewpointData = viewpoint.toJSON();
+
+  const result = staging.setStageView(activeStageId, viewpointData);
+
+  if (!result.ok) {
+    setStatus(result.reason);
+    return;
+  }
+
+  setStatus(`Saved current view for "${result.stage.name}".`);
+
+  console.log("Saved viewpoint data:", viewpointData);
+  console.log("Staging state:", staging.debugState());
+});
+
+ui.restoreStageViewButton.addEventListener("click", async () => {
+  const activeStageId = staging.getActiveStageId();
+
+  if (!activeStageId) {
+    setStatus("No active stage selected.");
+    return;
+  }
+
+  const stage = staging.getStageById(activeStageId);
+
+  if (!stage) {
+    setStatus("Active stage could not be found.");
+    return;
+  }
+
+  const savedViewData = staging.getStageView(activeStageId);
+
+  if (!savedViewData) {
+    setStatus(`No saved view found for "${stage.name}".`);
+    return;
+  }
+
+  const viewpoint = viewpoints.create();
+  viewpoint.title = `${stage.name} Restored View`;
+
+  viewpoint.set(savedViewData);
+
+  await viewpoint.go({
+    transition: true,
+    applyVisibility: false,
+    applyClippings: false,
+  });
+
+  setStatus(`Restored saved view for "${stage.name}".`);
+
+  console.log("Restored viewpoint data:", savedViewData);
+});

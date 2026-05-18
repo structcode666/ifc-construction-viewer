@@ -38,6 +38,9 @@ export function getUI() {
     renameStageButton: document.getElementById("rename-stage-button"),
     clearStageButton: document.getElementById("clear-stage-button"),
     deleteStageButton: document.getElementById("delete-stage-button"),
+
+    saveStageViewButton: document.getElementById("save-stage-view-button"),
+    restoreStageViewButton: document.getElementById("restore-stage-view-button"),
   };
 }
 

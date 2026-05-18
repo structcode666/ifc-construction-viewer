@@ -22,10 +22,19 @@
         </div>
 
         <div class="file-panel">
-          <label for="ifcFileInput" class="file-label">Choose IFC File</label>
-          <div id="fileName" class="file-name">No file selected</div>
+          <label for="ifcFileInput" class="file-label">
+            Choose IFC File
+          </label>
+
+          <div id="fileName" class="file-name">
+            No file selected
+          </div>
+
           <input id="ifcFileInput" type="file" accept=".ifc" />
-          <button id="loadButton">Load IFC</button>
+
+          <button id="loadButton">
+            Load IFC
+          </button>
 
           <hr class="panel-divider" />
 
@@ -40,27 +49,38 @@
           </label>
 
           <input id="projectFileInput" type="file" accept=".ifcseq" />
-          
         </div>
 
         <div class="status">
-          <p><strong>Status:</strong> <span id="statusText">Waiting for file</span></p>
+          <p>
+            <strong>Status:</strong>
+            <span id="statusText">Waiting for file</span>
+          </p>
         </div>
 
         <!-- <div id="selectionInfo">No element selected.</div> -->
 
-        <button id="toggleMode">Switch to Sequencing</button>
+        <button id="toggleMode">
+          Switch to Sequencing
+        </button>
 
         <div class="staging-panel">
           <h3>Construction Staging</h3>
 
           <div class="staging-actions">
-            <button id="add-stage-button">Add New Stage</button>
-            <button id="assign-stage-button">Assign Selection To Current Stage</button>
+            <button id="add-stage-button">
+              Add New Stage
+            </button>
+
+            <button id="assign-stage-button">
+              Assign Selection To Current Stage
+            </button>
           </div>
 
           <div id="staging-timeline" class="staging-timeline is-hidden">
-            <label for="stage-slider">Stage Timeline</label>
+            <label for="stage-slider">
+              Stage Timeline
+            </label>
 
             <input
               id="stage-slider"
@@ -72,23 +92,45 @@
               disabled
             />
 
-            <div id="stage-label">No stages yet.</div>
-
+            <div id="stage-label">
+              No stages yet.
+            </div>
           </div>
-            
+
           <div class="stage-actions">
-            <button id="rename-stage-button" type="button" class="stage-action-button">
+            <button
+              id="rename-stage-button"
+              type="button"
+              class="stage-action-button"
+            >
               Rename
             </button>
 
-            <button id="clear-stage-button" type="button" class="stage-action-button">
+            <button
+              id="clear-stage-button"
+              type="button"
+              class="stage-action-button"
+            >
               Clear
             </button>
 
-            <button id="delete-stage-button" type="button" class="stage-action-button danger">
+            <button
+              id="delete-stage-button"
+              type="button"
+              class="stage-action-button danger"
+            >
               Delete
             </button>
+          </div>
 
+          <div class="stage-view-actions">
+            <button id="save-stage-view-button" type="button">
+              Save Current View
+            </button>
+
+            <button id="restore-stage-view-button" type="button">
+              Restore Saved View
+            </button>
           </div>
 
           <div id="stage-summary"></div>
@@ -97,23 +139,40 @@
 
       <main class="viewer-area">
         <div class="viewer-actions">
-          <button id="hideSelectedButton">Hide Selected</button>
-          <button id="isolateSelectedButton">Isolate Selected</button>
-          <button id="resetVisibilityButton">Reset Visibility</button>
+          <button id="hideSelectedButton">
+            Hide Selected
+          </button>
+
+          <button id="isolateSelectedButton">
+            Isolate Selected
+          </button>
+
+          <button id="resetVisibilityButton">
+            Reset Visibility
+          </button>
         </div>
+
         <div class="viewer-top-right-controls">
           <button id="showContextButton" class="viewer-pill-button">
             Show Context
           </button>
 
           <div class="section-cut-toolbar">
-            <div class="section-cut-title">Section Cuts</div>
+            <div class="section-cut-title">
+              Section Cuts
+            </div>
 
-            <button id="toggleClippingButton" class="viewer-pill-button primary">
+            <button
+              id="toggleClippingButton"
+              class="viewer-pill-button primary"
+            >
               Enter Clipping Mode
             </button>
 
-            <button id="clearClippingButton" class="viewer-pill-button">
+            <button
+              id="clearClippingButton"
+              class="viewer-pill-button"
+            >
               Clear Clipping Planes
             </button>
 
@@ -125,8 +184,13 @@
 
         <div id="loadingOverlay" class="loading-overlay is-hidden">
           <div class="loading-card">
-            <div class="loading-title">Loading IFC model</div>
-            <div id="loadingText" class="loading-text">Preparing file...</div>
+            <div class="loading-title">
+              Loading IFC model
+            </div>
+
+            <div id="loadingText" class="loading-text">
+              Preparing file...
+            </div>
 
             <div class="loading-track">
               <div id="loadingBar" class="loading-bar"></div>

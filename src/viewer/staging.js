@@ -113,6 +113,7 @@ export function createStagingManager() {
       id: generateStageId(),
       name: trimmedName || `Stage ${state.stages.length + 1}`,
       items: {},
+      view: null,
     };
 
     state.stages.push(stage);
@@ -311,6 +312,7 @@ export function createStagingManager() {
         id: stage.id,
         name: stage.name,
         items: modelIdMapToSerializable(stage.items),
+        view: stage.view ?? null,
       })),
     };
   }
@@ -327,6 +329,7 @@ export function createStagingManager() {
       id: stage.id || generateStageId(),
       name: stage.name || `Stage ${index + 1}`,
       items: serializableToModelIdMap(stage.items),
+      view: stage.view ?? null,
     }));
 
     const activeStageExists = state.stages.some(
@@ -353,10 +356,45 @@ export function createStagingManager() {
         id: stage.id,
         name: stage.name,
         items: cloneModelIdMap(stage.items),
+        view: stage.view ?? null,
       })),
     };
   }
 
+  function setStageView(stageId, view) {
+    const stage = getStageById(stageId);
+
+    if (!stage) {
+      return {
+        ok: false,
+        reason: "Stage not found.",
+      };
+    }
+
+    if (!view) {
+      return {
+        ok: false,
+        reason: "No view data provided.",
+      };
+    }
+
+    stage.view = view;
+
+    return {
+      ok: true,
+      stage,
+    };
+  }
+
+  function getStageView(stageId) {
+    const stage = getStageById(stageId);
+
+    if (!stage) {
+      return null;
+    }
+
+    return stage.view ?? null;
+  }
 
 
   return {
@@ -378,5 +416,7 @@ export function createStagingManager() {
     restoreFromSnapshot,
     debugState,
     getActiveStageId,
+    setStageView,
+    getStageView,
   };
 }
