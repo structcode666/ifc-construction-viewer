@@ -226,6 +226,78 @@ ui.createLiftButton.addEventListener("click", async () => {
   console.log("Updated staging state:", staging.debugState());
 });
 
+ui.stageSummary.addEventListener("click", async (event) => {
+  const liftActionButton = event.target.closest("[data-lift-action]");
+
+  if (!liftActionButton) {
+    return;
+  }
+
+  const action = liftActionButton.dataset.liftAction;
+  const stageId = liftActionButton.dataset.stageId;
+  const liftId = liftActionButton.dataset.liftId;
+
+  if (action === "rename") {
+    const lift = staging.getLiftById(stageId, liftId);
+
+    if (!lift) {
+      setStatus("Lift could not be found.");
+      return;
+    }
+
+    const newName = prompt("Enter new lift name:", lift.name);
+
+    if (newName === null) {
+      return;
+    }
+
+    const result = staging.renameLift(stageId, liftId, newName);
+
+    if (!result.ok) {
+      setStatus(result.reason);
+      return;
+    }
+
+    renderStagingUI();
+
+    setStatus(`Renamed lift to "${result.lift.name}".`);
+    console.log("Renamed lift:", result.lift);
+    console.log("Updated staging state:", staging.debugState());
+
+    return;
+  }
+
+  if (action === "delete") {
+    const lift = staging.getLiftById(stageId, liftId);
+
+    if (!lift) {
+      setStatus("Lift could not be found.");
+      return;
+    }
+
+    const confirmed = confirm(
+      `Delete "${lift.name}"? This removes the lift label/grouping, but keeps its elements in the stage.`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    const result = staging.deleteLift(stageId, liftId);
+
+    if (!result.ok) {
+      setStatus(result.reason);
+      return;
+    }
+
+    renderStagingUI();
+
+    setStatus(`Deleted "${result.deletedLift.name}".`);
+    console.log("Deleted lift:", result.deletedLift);
+    console.log("Updated staging state:", staging.debugState());
+  }
+});
+
 ui.stageSlider.addEventListener("input", async () => {
   await showCurrentSliderStage();
 });
@@ -809,7 +881,33 @@ function renderStageSummary(stages) {
               .map((lift) => {
                 return `
                   <div class="lift-summary-row">
-                    ${lift.name} (${lift.itemCount} items)
+                    <div class="lift-summary-main">
+                      <span class="lift-summary-name">
+                        ${lift.name} (${lift.itemCount} items)
+                      </span>
+                    </div>
+
+                    <div class="lift-summary-actions">
+                      <button
+                        type="button"
+                        class="lift-action-button"
+                        data-lift-action="rename"
+                        data-stage-id="${stage.id}"
+                        data-lift-id="${lift.id}"
+                      >
+                        Rename
+                      </button>
+
+                      <button
+                        type="button"
+                        class="lift-action-button danger"
+                        data-lift-action="delete"
+                        data-stage-id="${stage.id}"
+                        data-lift-id="${lift.id}"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </div>
                 `;
               })

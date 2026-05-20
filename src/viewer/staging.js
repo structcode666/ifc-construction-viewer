@@ -139,6 +139,16 @@ export function createStagingManager() {
     return state.stages.find((stage) => stage.id === stageId) ?? null;
   }
 
+  function getLiftById(stageId, liftId) {
+    const stage = getStageById(stageId);
+
+    if (!stage) {
+      return null;
+    }
+
+    return stage.lifts.find((lift) => lift.id === liftId) ?? null;
+  }
+
   function renameStage(stageId, newName) {
     const stage = getStageById(stageId);
 
@@ -166,6 +176,43 @@ export function createStagingManager() {
     };
   }
 
+  function renameLift(stageId, liftId, newName) {
+    const stage = getStageById(stageId);
+
+    if (!stage) {
+      return {
+        ok: false,
+        reason: "Stage not found.",
+      };
+    }
+
+    const lift = getLiftById(stageId, liftId);
+
+    if (!lift) {
+      return {
+        ok: false,
+        reason: "Lift not found.",
+      };
+    }
+
+    const trimmedName = newName?.trim();
+
+    if (!trimmedName) {
+      return {
+        ok: false,
+        reason: "Lift name cannot be empty.",
+      };
+    }
+
+    lift.name = trimmedName;
+
+    return {
+      ok: true,
+      stage,
+      lift,
+    };
+  }
+
   function deleteStage(stageId) {
     const index = state.stages.findIndex((stage) => stage.id === stageId);
 
@@ -187,6 +234,36 @@ export function createStagingManager() {
       ok: true,
       deletedStage,
       activeStageId: state.activeStageId,
+    };
+  }
+
+  function deleteLift(stageId, liftId) {
+    const stage = getStageById(stageId);
+
+    if (!stage) {
+      return {
+        ok: false,
+        reason: "Stage not found.",
+      };
+    }
+
+    const liftIndex = stage.lifts.findIndex((lift) => lift.id === liftId);
+
+    if (liftIndex === -1) {
+      return {
+        ok: false,
+        reason: "Lift not found.",
+      };
+    }
+
+    const [deletedLift] = stage.lifts.splice(liftIndex, 1);
+
+    renumberDefaultLiftNames(stage);
+
+    return {
+      ok: true,
+      stage,
+      deletedLift,
     };
   }
 
@@ -503,25 +580,49 @@ export function createStagingManager() {
     return `LIFT ${highestLiftNumber + 1}`;
   }
 
+  function renumberDefaultLiftNames(stage) {
+    let nextLiftNumber = 1;
+
+    for (const lift of stage.lifts) {
+      const isDefaultLiftName = /^LIFT\s+\d+$/i.test(lift.name);
+
+      if (!isDefaultLiftName) {
+        continue;
+      }
+
+      lift.name = `LIFT ${nextLiftNumber}`;
+      nextLiftNumber++;
+    }
+  }
+
   return {
     createStage,
     getStageById,
+    getLiftById,
     getStages,
+
     renameStage,
+    renameLift,
+
     deleteStage,
+    deleteLift,
+
     moveStage,
     assignSelectionToStage,
     createLiftFromSelection,
     clearStage,
+
     getStageSelection,
     getCumulativeSelection,
     setActiveStage,
     clearActiveStage,
     setViewMode,
     getActiveStageSelection,
+
     createSnapshot,
     restoreFromSnapshot,
     debugState,
+
     getActiveStageId,
     setStageView,
     getStageView,

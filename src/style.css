@@ -386,6 +386,81 @@ button:disabled {
   color: #64748b;
 }
 
+.lift-summary-row {
+  position: relative;
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+
+  padding: 0.28rem 0 0.28rem 0.35rem;
+
+  font-size: 0.84rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: #334155;
+}
+
+.lift-summary-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.lift-summary-name {
+  display: inline-block;
+  overflow-wrap: anywhere;
+}
+
+.lift-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.lift-action-button {
+  width: auto;
+
+  padding: 0.28rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+
+  background: #ffffff;
+  color: #475569;
+
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1;
+
+  box-shadow: none;
+}
+
+.lift-action-button:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+  color: #1d4ed8;
+
+  transform: translateY(-1px);
+  box-shadow: none;
+}
+
+.lift-action-button:active {
+  transform: translateY(0);
+}
+
+.lift-action-button.danger {
+  border-color: #fecaca;
+  background: #fff;
+  color: #b91c1c;
+}
+
+.lift-action-button.danger:hover {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #991b1b;
+}
+
 /* =========================
    STAGE EDIT ACTIONS
 ========================= */
