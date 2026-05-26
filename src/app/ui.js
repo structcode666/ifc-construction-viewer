@@ -43,6 +43,8 @@ export function getUI() {
     restoreStageViewButton: document.getElementById("restore-stage-view-button"),
 
     createLiftButton: document.getElementById("create-lift-button"),
+
+    toggleLiftLabelsButton: document.getElementById("toggleLiftLabelsButton"),
   };
 }
 

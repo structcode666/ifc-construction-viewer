@@ -11,6 +11,7 @@ import {
   clearClippingPlanes,
 } from "./viewer/clipper.js";
 import { saveProjectFile, readProjectFile } from "./app/projectStorage.js";
+import { createLiftLabelManager } from "./viewer/liftLabels.js";
 
 const ui = getUI();
 
@@ -26,6 +27,9 @@ let mode = "staging";
 let showContext = false;
 
 let viewpoints = null;
+let liftLabels = null;
+
+let showLiftLabels = false;
 
 const staging = createStagingManager();
 
@@ -44,6 +48,17 @@ async function startApp() {
   viewpoints = components.get(OBC.Viewpoints);
   viewpoints.world = world;
 
+  // Temporary debug helpers so we can inspect viewer objects from DevTools
+  window.components = components;
+  window.world = world;
+  window.fragments = fragments;
+
+  liftLabels = createLiftLabelManager({
+    components,
+    world,
+    fragments,
+  });
+
   selection = initSelection({
     components,
     world,
@@ -57,6 +72,41 @@ async function startApp() {
     container: ui.viewerArea,
   });
 
+  window.debugLiftLabelState = () => {
+  const labelStages = getLabelStagesForCurrentSlider();
+  const domLabels = [...document.querySelectorAll(".lift-marker")].map(
+    (element) => element.textContent
+  );
+
+  console.log({
+    mode,
+    showLiftLabels,
+    currentSliderValue: ui.stageSlider.value,
+    labelStages,
+    domLabels,
+  });
+
+  return {
+    mode,
+    showLiftLabels,
+    currentSliderValue: ui.stageSlider.value,
+    labelStages,
+    domLabels,
+  };
+};
+
+
+
+
+  window.clearLiftLabels = () => {
+    console.log("Clearing lift labels...");
+
+    liftLabels.clear();
+
+    return "clearLiftLabels ran";
+  };
+
+  
   renderStagingUI();
 }
 
@@ -597,17 +647,30 @@ ui.fileInput.addEventListener("change", () => {
 function enterStagingMode() {
   mode = "staging";
   showContext = false;
+  showLiftLabels = false;
+  liftLabels?.clear();
 
   ui.toggleModeButton.textContent = "Switch to Sequencing";
   ui.stagingTimeline.classList.add("is-hidden");
   ui.toggleContextButton.textContent = "Show Context";
+
+  if (ui.toggleLiftLabelsButton) {
+    ui.toggleLiftLabelsButton.textContent = "Show Lift Labels";
+  }
 }
 
 function enterSequencingMode() {
   mode = "sequencing";
+  showLiftLabels = false;
+
+  liftLabels?.clear();
 
   ui.toggleModeButton.textContent = "Switch to Staging";
   ui.stagingTimeline.classList.remove("is-hidden");
+
+  if (ui.toggleLiftLabelsButton) {
+    ui.toggleLiftLabelsButton.textContent = "Show Lift Labels";
+  }
 }
 
 async function resetViewerVisualState() {
@@ -706,6 +769,7 @@ async function showCurrentSliderStage() {
   const stages = staging.getStages();
 
   if (stages.length === 0) {
+    liftLabels?.clear();
     updateStageLabel(null, 0, 0);
 
     try {
@@ -729,6 +793,7 @@ async function showCurrentSliderStage() {
   staging.setActiveStage(stage.id);
 
   if (mode === "staging") {
+    liftLabels?.clear();
     try {
       await resetViewerVisualState();
 
@@ -771,6 +836,7 @@ async function showCurrentSliderStage() {
   if (isModelIdMapEmpty(itemsToShow)) {
     try {
       await resetViewerVisualState();
+      await updateLiftLabelsForCurrentView();
       setStatus(`${stage.name} is empty. Showing full model.`);
     } catch (error) {
       console.error("Failed to show full model for empty stage:", error);
@@ -790,6 +856,7 @@ async function showCurrentSliderStage() {
 
       await hider.isolate(itemsToShow);
       await fragments.core.update(true);
+      await updateLiftLabelsForCurrentView();
 
       console.log("Finished isolating items.");
       setStatus(`Showing cumulative view up to ${stage.name}.`);
@@ -802,6 +869,8 @@ async function showCurrentSliderStage() {
     const contextItems = subtractModelIdMap(allItems, itemsToShow);
 
     await setOpacityForItems(contextItems, 0.15);
+
+    await updateLiftLabelsForCurrentView();
 
     setStatus(`Showing ${stage.name} with transparent context.`);
   } catch (error) {
@@ -1069,3 +1138,76 @@ ui.restoreStageViewButton.addEventListener("click", async () => {
 
   console.log("Restored viewpoint data:", savedViewData);
 });
+
+
+// -----------------------------------------------------------------------------
+// Lift label visibility
+// -----------------------------------------------------------------------------
+
+
+
+
+ui.toggleLiftLabelsButton.addEventListener("click", async () => {
+  if (mode !== "sequencing") {
+    setStatus("Lift labels are only available in sequencing mode.");
+    return;
+  }
+
+  showLiftLabels = !showLiftLabels;
+
+  ui.toggleLiftLabelsButton.textContent = showLiftLabels
+    ? "Hide Lift Labels"
+    : "Show Lift Labels";
+
+  await updateLiftLabelsForCurrentView();
+
+  setStatus(
+    showLiftLabels
+      ? "Lift labels shown."
+      : "Lift labels hidden."
+  );
+});
+
+
+async function updateLiftLabelsForCurrentView() {
+  if (!liftLabels) {
+    return;
+  }
+
+  if (mode !== "sequencing") {
+    liftLabels.clear();
+    return;
+  }
+
+  if (!showLiftLabels) {
+    liftLabels.clear();
+    return;
+  }
+
+  const labelStages = getLabelStagesForCurrentSlider();
+
+  await liftLabels.showLiftLabelsForStages(labelStages);
+}
+
+function getLabelStagesForCurrentSlider() {
+  const stages = staging.getStages();
+
+  if (stages.length === 0) {
+    return [];
+  }
+
+  const stageIndex = Number(ui.stageSlider.value);
+  const summaryStage = stages[stageIndex];
+
+  if (!summaryStage) {
+    return [];
+  }
+
+  const fullStage = staging.getStageById(summaryStage.id);
+
+  if (!fullStage) {
+    return [];
+  }
+
+  return [fullStage];
+}

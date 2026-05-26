@@ -1,4 +1,5 @@
 import * as OBC from "@thatopen/components";
+import * as OBCF from "@thatopen/components-front";
 
 export async function setupWorld(container) {
   const components = new OBC.Components();
@@ -7,7 +8,7 @@ export async function setupWorld(container) {
   const world = worlds.create();
 
   world.scene = new OBC.SimpleScene(components);
-  world.renderer = new OBC.SimpleRenderer(components, container);
+  world.renderer = new OBCF.PostproductionRenderer(components, container);
   world.camera = new OBC.OrthoPerspectiveCamera(components);
 
   container.addEventListener("contextmenu", (event) => {
