@@ -8,14 +8,16 @@
     "build": "vite build",
     "preview": "vite preview"
   },
-  "devDependencies": {
-    "vite": "^8.0.4"
-  },
   "dependencies": {
-    "@thatopen/components": "^3.4.0",
-    "@thatopen/components-front": "^3.4.2",
-    "camera-controls": "^3.1.2",
-    "jszip": "^3.10.1",
-    "three": "^0.183.2"
+    "@thatopen/components": "3.4.0",
+    "@thatopen/components-front": "3.4.2",
+    "@thatopen/fragments": "3.4.1",
+    "camera-controls": "3.1.2",
+    "jszip": "3.10.1",
+    "three": "0.183.2",
+    "web-ifc": "0.0.77"
+  },
+  "devDependencies": {
+    "vite": "8.0.8"
   }
 }
