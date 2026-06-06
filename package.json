@@ -13,6 +13,8 @@
     "@thatopen/components-front": "3.4.2",
     "@thatopen/fragments": "3.4.1",
     "camera-controls": "3.1.2",
+    "html-to-image": "^1.11.13",
+    "jspdf": "^3.0.4",
     "jszip": "3.10.1",
     "three": "0.183.2",
     "web-ifc": "0.0.77"

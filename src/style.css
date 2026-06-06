@@ -529,6 +529,23 @@ button:disabled {
   background: #f8fafc;
 }
 
+#export-stage-pdf-button {
+  grid-column: 1 / -1;
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+}
+
+#export-stage-pdf-button:hover {
+  background: #1e293b;
+  border-color: #1e293b;
+  color: #ffffff;
+}
+
+.viewer-area.is-exporting .viewer-actions,
+.viewer-area.is-exporting .viewer-top-right-controls {
+  display: none;
+}
 .stage-view-actions button {
   width: 100%;
 
@@ -862,4 +879,12 @@ button:disabled {
   pointer-events: none;
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.3);
   border: 1px solid rgba(255, 255, 255, 0.18);
+}
+
+.viewer-area.is-exporting {
+  background: #ffffff;
+}
+
+.viewer-area.is-exporting #viewer-container {
+  background: #ffffff;
 }

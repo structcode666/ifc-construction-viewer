@@ -45,6 +45,8 @@ export function getUI() {
     createLiftButton: document.getElementById("create-lift-button"),
 
     toggleLiftLabelsButton: document.getElementById("toggleLiftLabelsButton"),
+
+    exportStagePdfButton: document.getElementById("export-stage-pdf-button"),
   };
 }
 

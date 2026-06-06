@@ -13,6 +13,13 @@ import {
 import { saveProjectFile, readProjectFile } from "./app/projectStorage.js";
 import { createLiftLabelManager } from "./viewer/liftLabels.js";
 
+import { toPng } from "html-to-image";
+import {
+  cropWhitespaceFromImage,
+  exportStageImageToPdf,
+} from "./app/pdfExport.js";
+import * as THREE from "three";
+
 const ui = getUI();
 
 let components = null;
@@ -1210,4 +1217,175 @@ function getLabelStagesForCurrentSlider() {
   }
 
   return [fullStage];
+}
+
+// -----------------------------------------------------------------------------
+// PDF export
+// -----------------------------------------------------------------------------
+
+ui.exportStagePdfButton.addEventListener("click", async () => {
+  const stages = staging.getStages();
+
+  if (stages.length === 0) {
+    setStatus("Create a stage before exporting.");
+    return;
+  }
+
+  const stageIndex = Number(ui.stageSlider.value);
+  const summaryStage = stages[stageIndex];
+
+  if (!summaryStage) {
+    setStatus("No current stage selected for export.");
+    return;
+  }
+
+  const fullStage = staging.getStageById(summaryStage.id);
+
+  if (!fullStage) {
+    setStatus("Could not find full stage data for export.");
+    return;
+  }
+
+  await exportCurrentStagePdf(fullStage);
+});
+
+async function exportCurrentStagePdf(stage) {
+  const previousMode = mode;
+  const previousShowLiftLabels = showLiftLabels;
+  const previousShowContext = showContext;
+
+  const previousSceneBackground = world.scene.three.background;
+
+  const previousRendererClearColor = world.renderer.three.getClearColor(
+    new THREE.Color()
+  );
+
+  const previousRendererClearAlpha = world.renderer.three.getClearAlpha();
+
+  try {
+    setStatus(`Preparing PDF export for ${stage.name}...`);
+
+    // Force the viewer into the state we want to capture.
+    mode = "sequencing";
+    showContext = false;
+    showLiftLabels = true;
+
+    ui.toggleModeButton.textContent = "Switch to Staging";
+    ui.stagingTimeline.classList.remove("is-hidden");
+    ui.toggleLiftLabelsButton.textContent = "Hide Lift Labels";
+
+    // 1. Show the correct staged/cumulative elements.
+    await showCurrentSliderStage();
+
+    // 2. Restore the saved stage camera, if one exists.
+    const usedSavedView = await restoreSavedViewForStage(stage.id, {
+      transition: false,
+    });
+
+    if (!usedSavedView) {
+      console.warn(
+        `No saved view found for ${stage.name}. Exporting current camera view.`
+      );
+    }
+
+    // 3. Re-render lift labels after the camera has moved.
+    await updateLiftLabelsForCurrentView();
+
+    // 4. Make the export background white without permanently changing the app.
+    world.scene.three.background = new THREE.Color("#ffffff");
+    world.renderer.three.setClearColor("#ffffff", 1);
+
+    await fragments.core.update(true);
+    await waitForAnimationFrames(2);
+
+    // 5. Hide viewer UI controls while capturing the DOM.
+    ui.viewerArea.classList.add("is-exporting");
+
+    await waitForFragmentsReady();
+    await waitForAnimationFrames(3);
+
+    // 6. Capture the viewer area as an image.
+    const rawImageDataUrl = await toPng(ui.viewerArea, {
+      cacheBust: true,
+      pixelRatio: 2,
+      backgroundColor: "#ffffff",
+    });
+
+    // 7. Crop white space so the model occupies more of the PDF viewport.
+    const croppedCapture = await cropWhitespaceFromImage(rawImageDataUrl, {
+      threshold: 245,
+      paddingRatio: 0.14,
+    });
+
+    // 8. Place the cropped image onto the PDF drawing sheet.
+    exportStageImageToPdf({
+      imageDataUrl: croppedCapture.imageDataUrl,
+      imagePixelWidth: croppedCapture.width,
+      imagePixelHeight: croppedCapture.height,
+      stageName: stage.name,
+      projectTitle: currentIfcFile?.name ?? "IFC Construction Viewer",
+      sheetTitle: "CONSTRUCTION SEQUENCING",
+      clientName: "CLIENT NAME",
+      drawingNumber: "DRAFT-001",
+    });
+
+    setStatus(`Exported PDF for ${stage.name}.`);
+  } catch (error) {
+    console.error("PDF export failed:", error);
+    setStatus("PDF export failed.");
+  } finally {
+    ui.viewerArea.classList.remove("is-exporting");
+
+    // Restore the WebGL background even if export fails.
+    world.scene.three.background = previousSceneBackground;
+    world.renderer.three.setClearColor(
+      previousRendererClearColor,
+      previousRendererClearAlpha
+    );
+
+    mode = previousMode;
+    showLiftLabels = previousShowLiftLabels;
+    showContext = previousShowContext;
+
+    if (mode === "staging") {
+      enterStagingMode();
+      await resetViewerVisualState();
+    } else {
+      ui.toggleLiftLabelsButton.textContent = showLiftLabels
+        ? "Hide Lift Labels"
+        : "Show Lift Labels";
+
+      await showCurrentSliderStage();
+    }
+  }
+}
+
+async function waitForAnimationFrames(count = 1) {
+  for (let i = 0; i < count; i++) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  }
+}
+
+async function restoreSavedViewForStage(stageId, { transition = false } = {}) {
+  const savedViewData = staging.getStageView(stageId);
+
+  if (!savedViewData) {
+    return false;
+  }
+
+  const viewpoint = viewpoints.create();
+  viewpoint.title = "Export Viewpoint";
+
+  viewpoint.set(savedViewData);
+
+  await viewpoint.go({
+    transition,
+    applyVisibility: false,
+    applyClippings: false,
+  });
+
+  await waitForFragmentsReady();
+  await waitForAnimationFrames(2);
+
+  return true;
 }
