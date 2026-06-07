@@ -47,6 +47,9 @@ export function getUI() {
     toggleLiftLabelsButton: document.getElementById("toggleLiftLabelsButton"),
 
     exportStagePdfButton: document.getElementById("export-stage-pdf-button"),
+
+    exportAllStagesPdfButton: document.getElementById("export-all-stages-pdf-button"),
+    
   };
 }
 

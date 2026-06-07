@@ -17,6 +17,7 @@ import { toPng } from "html-to-image";
 import {
   cropWhitespaceFromImage,
   exportStageImageToPdf,
+  exportMultipleStageImagesToPdf,
 } from "./app/pdfExport.js";
 import * as THREE from "three";
 
@@ -59,6 +60,68 @@ async function startApp() {
   window.components = components;
   window.world = world;
   window.fragments = fragments;
+
+window.debugFragmentModelMethods = () => {
+  const firstModel = [...fragments.list.values()][0];
+
+  if (!firstModel) {
+    console.log("No fragment model loaded yet.");
+    return null;
+  }
+
+  const methodNames = new Set();
+
+  let currentObject = firstModel;
+
+  while (currentObject && currentObject !== Object.prototype) {
+    const names = Reflect.ownKeys(currentObject);
+
+    for (const name of names) {
+      if (typeof name !== "string") continue;
+
+      const value = firstModel[name];
+
+      if (typeof value === "function") {
+        methodNames.add(name);
+      }
+    }
+
+    currentObject = Object.getPrototypeOf(currentObject);
+  }
+
+  const allMethods = [...methodNames].sort();
+
+  const colourRelatedMethods = allMethods.filter((name) => {
+    const lowerName = name.toLowerCase();
+
+    return (
+      lowerName.includes("color") ||
+      lowerName.includes("colour") ||
+      lowerName.includes("material") ||
+      lowerName.includes("style") ||
+      lowerName.includes("opacity") ||
+      lowerName.includes("highlight")
+    );
+  });
+
+  console.log("Fragment model:", firstModel);
+  console.log("All fragment model methods:", allMethods);
+  console.log("Colour/material/opacity methods:", colourRelatedMethods);
+
+  console.log("Direct checks:", {
+    setOpacity: typeof firstModel.setOpacity,
+    resetOpacity: typeof firstModel.resetOpacity,
+    setColor: typeof firstModel.setColor,
+    resetColor: typeof firstModel.resetColor,
+    setMaterial: typeof firstModel.setMaterial,
+    resetMaterial: typeof firstModel.resetMaterial,
+  });
+
+  return {
+    allMethods,
+    colourRelatedMethods,
+  };
+};
 
   liftLabels = createLiftLabelManager({
     components,
@@ -684,10 +747,14 @@ async function resetViewerVisualState() {
   const hider = components.get(OBC.Hider);
 
   await hider.set(true);
-  await resetAllOpacity();
+
+  for (const [, model] of fragments.list) {
+    await model.resetColor();
+    await model.resetOpacity();
+  }
+
   await fragments.core.update(true);
 }
-
 async function resetAllOpacity() {
   for (const [, model] of fragments.list) {
     await model.resetOpacity();
@@ -770,6 +837,128 @@ async function setOpacityForItems(items, opacity) {
   }
 
   await fragments.core.update(true);
+}
+
+function mergeModelIdMaps(...maps) {
+  const merged = {};
+
+  for (const map of maps) {
+    if (!map) continue;
+
+    for (const [modelId, localIds] of Object.entries(map)) {
+      if (!merged[modelId]) {
+        merged[modelId] = new Set();
+      }
+
+      for (const localId of localIds) {
+        merged[modelId].add(localId);
+      }
+    }
+  }
+
+  return merged;
+}
+
+function subtractManyModelIdMaps(allItems, mapsToRemove) {
+  const result = {};
+
+  for (const [modelId, allLocalIds] of Object.entries(allItems)) {
+    result[modelId] = new Set(allLocalIds);
+
+    for (const mapToRemove of mapsToRemove) {
+      const removeLocalIds = mapToRemove?.[modelId];
+
+      if (!removeLocalIds) continue;
+
+      for (const localId of removeLocalIds) {
+        result[modelId].delete(localId);
+      }
+    }
+
+    if (result[modelId].size === 0) {
+      delete result[modelId];
+    }
+  }
+
+  return result;
+}
+
+function getPreviousStageItems(stageId) {
+  const debugState = staging.debugState();
+  const targetIndex = debugState.stages.findIndex((stage) => stage.id === stageId);
+
+  if (targetIndex === -1) {
+    return {};
+  }
+
+  const previousStageMaps = debugState.stages
+    .slice(0, targetIndex)
+    .map((stage) => stage.items);
+
+  return mergeModelIdMaps(...previousStageMaps);
+}
+
+async function setColorForItems(items, colorHex) {
+  const color = new THREE.Color(colorHex);
+
+  for (const [modelId, localIds] of Object.entries(items ?? {})) {
+    const model = fragments.list.get(modelId);
+
+    if (!model) continue;
+
+    if (!localIds || localIds.size === 0) continue;
+
+    await model.setColor([...localIds], color);
+  }
+
+  await fragments.core.update(true);
+}
+
+async function applyPdfExportVisualState(stageId) {
+  const hider = components.get(OBC.Hider);
+
+  const currentStageItems = staging.getStageSelection(stageId);
+  const previousStageItems = getPreviousStageItems(stageId);
+  const allItems = await getAllGeometryItems();
+
+  const remainderItems = subtractManyModelIdMaps(allItems, [
+    previousStageItems,
+    currentStageItems,
+  ]);
+
+  // Start from a clean model state.
+  await hider.set(true);
+
+  for (const [, model] of fragments.list) {
+    await model.resetColor();
+    await model.resetOpacity();
+  }
+
+  await fragments.core.update(true);
+
+  // Apply export-only colours.
+  // Order matters:
+  // 1. Grey/transparent context first
+  // 2. Previous erected work second
+  // 3. Current stage last, so it visually wins if there is any overlap
+
+  await setColorForItems(remainderItems, "#b8b8b8");
+  await setOpacityForItems(remainderItems, 0.18);
+
+  await setColorForItems(previousStageItems, "#5fa85f");
+  await setOpacityForItems(previousStageItems, 1.0);
+
+  await setColorForItems(currentStageItems, "#d94f4f");
+  await setOpacityForItems(currentStageItems, 1.0);
+
+  await fragments.core.update(true);
+
+  console.log("Applied PDF export visual state:", {
+    stageId,
+    previousStageItems,
+    currentStageItems,
+    remainderItems,
+  });
 }
 
 async function showCurrentSliderStage() {
@@ -1274,8 +1463,8 @@ async function exportCurrentStagePdf(stage) {
     ui.stagingTimeline.classList.remove("is-hidden");
     ui.toggleLiftLabelsButton.textContent = "Hide Lift Labels";
 
-    // 1. Show the correct staged/cumulative elements.
-    await showCurrentSliderStage();
+    // 1. Apply export-only red/green/grey visual state.
+    await applyPdfExportVisualState(stage.id);
 
     // 2. Restore the saved stage camera, if one exists.
     const usedSavedView = await restoreSavedViewForStage(stage.id, {
@@ -1313,8 +1502,8 @@ async function exportCurrentStagePdf(stage) {
 
     // 7. Crop white space so the model occupies more of the PDF viewport.
     const croppedCapture = await cropWhitespaceFromImage(rawImageDataUrl, {
-      threshold: 245,
-      paddingRatio: 0.14,
+      threshold: 248,
+      paddingRatio: 0.06,
     });
 
     // 8. Place the cropped image onto the PDF drawing sheet.
@@ -1336,16 +1525,159 @@ async function exportCurrentStagePdf(stage) {
   } finally {
     ui.viewerArea.classList.remove("is-exporting");
 
-    // Restore the WebGL background even if export fails.
     world.scene.three.background = previousSceneBackground;
     world.renderer.three.setClearColor(
       previousRendererClearColor,
       previousRendererClearAlpha
     );
 
+    for (const [, model] of fragments.list) {
+      await model.resetColor();
+      await model.resetOpacity();
+    }
+
+    await fragments.core.update(true);
+
     mode = previousMode;
     showLiftLabels = previousShowLiftLabels;
     showContext = previousShowContext;
+
+    if (mode === "staging") {
+      enterStagingMode();
+      await resetViewerVisualState();
+    } else {
+      ui.toggleLiftLabelsButton.textContent = showLiftLabels
+        ? "Hide Lift Labels"
+        : "Show Lift Labels";
+
+      await showCurrentSliderStage();
+    }
+  }
+}
+
+ui.exportAllStagesPdfButton.addEventListener("click", async () => {
+  const stages = staging.getStages();
+
+  if (stages.length === 0) {
+    setStatus("Create stages before exporting all stages.");
+    return;
+  }
+
+  await exportAllStagesPdf();
+});
+
+async function exportAllStagesPdf() {
+  const previousMode = mode;
+  const previousShowLiftLabels = showLiftLabels;
+  const previousShowContext = showContext;
+  const previousSliderValue = ui.stageSlider.value;
+
+  const previousSceneBackground = world.scene.three.background;
+
+  const previousRendererClearColor = world.renderer.three.getClearColor(
+    new THREE.Color()
+  );
+
+  const previousRendererClearAlpha = world.renderer.three.getClearAlpha();
+
+  const stageSheets = [];
+
+  try {
+    const stages = staging.getStages();
+
+    mode = "sequencing";
+    showContext = false;
+    showLiftLabels = true;
+
+    ui.toggleModeButton.textContent = "Switch to Staging";
+    ui.stagingTimeline.classList.remove("is-hidden");
+    ui.toggleLiftLabelsButton.textContent = "Hide Lift Labels";
+
+    world.scene.three.background = new THREE.Color("#ffffff");
+    world.renderer.three.setClearColor("#ffffff", 1);
+
+    ui.viewerArea.classList.add("is-exporting");
+
+    for (let index = 0; index < stages.length; index++) {
+      const summaryStage = stages[index];
+      const fullStage = staging.getStageById(summaryStage.id);
+
+      if (!fullStage) {
+        continue;
+      }
+
+      setStatus(`Exporting ${fullStage.name} (${index + 1} / ${stages.length})...`);
+
+      setSliderToStageId(fullStage.id);
+      staging.setActiveStage(fullStage.id);
+
+      await applyPdfExportVisualState(fullStage.id);
+
+      const usedSavedView = await restoreSavedViewForStage(fullStage.id, {
+        transition: false,
+      });
+
+      if (!usedSavedView) {
+        console.warn(
+          `No saved view found for ${fullStage.name}. Exporting current camera view.`
+        );
+      }
+
+      await updateLiftLabelsForCurrentView();
+
+      await fragments.core.update(true);
+      await waitForFragmentsReady();
+      await waitForAnimationFrames(3);
+
+      const rawImageDataUrl = await toPng(ui.viewerArea, {
+        cacheBust: true,
+        pixelRatio: 2,
+        backgroundColor: "#ffffff",
+      });
+
+      const croppedCapture = await cropWhitespaceFromImage(rawImageDataUrl, {
+        threshold: 248,
+        paddingRatio: 0.06,
+      });
+
+      stageSheets.push({
+        imageDataUrl: croppedCapture.imageDataUrl,
+        imagePixelWidth: croppedCapture.width,
+        imagePixelHeight: croppedCapture.height,
+        stageName: fullStage.name,
+        projectTitle: currentIfcFile?.name ?? "IFC Construction Viewer",
+        sheetTitle: "CONSTRUCTION SEQUENCING",
+        clientName: "CLIENT NAME",
+        drawingNumber: `DRAFT-${String(index + 1).padStart(3, "0")}`,
+      });
+    }
+
+    exportMultipleStageImagesToPdf(stageSheets);
+
+    setStatus(`Exported ${stageSheets.length} stages to combined PDF.`);
+  } catch (error) {
+    console.error("Export all stages failed:", error);
+    setStatus("Export all stages failed.");
+  } finally {
+    ui.viewerArea.classList.remove("is-exporting");
+
+    world.scene.three.background = previousSceneBackground;
+    world.renderer.three.setClearColor(
+      previousRendererClearColor,
+      previousRendererClearAlpha
+    );
+
+    for (const [, model] of fragments.list) {
+      await model.resetColor();
+      await model.resetOpacity();
+    }
+
+    await fragments.core.update(true);
+
+    mode = previousMode;
+    showLiftLabels = previousShowLiftLabels;
+    showContext = previousShowContext;
+    ui.stageSlider.value = previousSliderValue;
 
     if (mode === "staging") {
       enterStagingMode();

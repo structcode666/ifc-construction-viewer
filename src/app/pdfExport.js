@@ -1,5 +1,17 @@
 import { jsPDF } from "jspdf";
 
+
+
+
+
+export function createStagePdfDocument() {
+  return new jsPDF({
+    orientation: "landscape",
+    unit: "mm",
+    format: "a3",
+  });
+}
+
 /**
  * Fits an image inside a PDF rectangle without distorting it.
  *
@@ -179,7 +191,7 @@ export async function cropWhitespaceFromImage(
   };
 }
 
-export function exportStageImageToPdf({
+export function addStageSheetToPdf(pdf, {
   imageDataUrl,
   imagePixelWidth,
   imagePixelHeight,
@@ -192,11 +204,11 @@ export function exportStageImageToPdf({
   dateText = new Date().toLocaleDateString(),
   notes = [],
 }) {
-  const pdf = new jsPDF({
-    orientation: "landscape",
-    unit: "mm",
-    format: "a3",
-  });
+  // const pdf = new jsPDF({
+  //   orientation: "landscape",
+  //   unit: "mm",
+  //   format: "a3",
+  // });
 
   const pageWidth = pdf.internal.pageSize.getWidth();
   const pageHeight = pdf.internal.pageSize.getHeight();
@@ -306,7 +318,7 @@ export function exportStageImageToPdf({
   pdf.setFillColor(255, 255, 255);
   pdf.rect(mainX, contentTop, mainWidth, contentHeight, "F");
 
-  const imagePadding = 3;
+  const imagePadding = 0;
 
   const imageBox = {
     boxX: mainX + imagePadding,
@@ -466,6 +478,30 @@ export function exportStageImageToPdf({
     pageHeight - 2.5
   );
 
-  const safeStageName = stageName.replaceAll(" ", "_").replace(/[^\w-]/g, "");
+}
+
+export function exportStageImageToPdf(stageSheetData) {
+  const pdf = createStagePdfDocument();
+
+  addStageSheetToPdf(pdf, stageSheetData);
+
+  const safeStageName = stageSheetData.stageName
+    .replaceAll(" ", "_")
+    .replace(/[^\w-]/g, "");
+
   pdf.save(`${safeStageName}_sequencing.pdf`);
+}
+
+export function exportMultipleStageImagesToPdf(stageSheets) {
+  const pdf = createStagePdfDocument();
+
+  stageSheets.forEach((stageSheet, index) => {
+    if (index > 0) {
+      pdf.addPage();
+    }
+
+    addStageSheetToPdf(pdf, stageSheet);
+  });
+
+  pdf.save("construction_sequence_all_stages.pdf");
 }
