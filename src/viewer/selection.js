@@ -8,6 +8,7 @@ export function initSelection({
   fragments,
   ui,
   onSelectionChanged,
+  canSelect = () => true,
 }) {
   let selectedItem = null;
 
@@ -345,6 +346,11 @@ export function initSelection({
   });
 
   ui.viewerContainer.addEventListener("pointerup", async (event) => {
+    if (!canSelect()) {
+      pointerDownPosition = null;
+      return;
+    }
+
     if (!pointerDownPosition) return;
 
     const deltaX = event.clientX - pointerDownPosition.x;

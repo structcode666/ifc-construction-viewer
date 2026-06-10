@@ -134,6 +134,10 @@ async function startApp() {
     world,
     fragments,
     ui,
+
+    // Prevent selection/highlight changes while the model is temporarily dressed
+    // for PDF export.
+    canSelect: () => !isPdfExporting,
   });
 
   await initClipping({
@@ -267,6 +271,11 @@ ui.addStageButton.addEventListener("click", async () => {
 });
 
 ui.assignStageButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before assigning stages.");
+    return;
+  }
+
   const stages = staging.getStages();
 
   if (stages.length === 0) {
@@ -311,6 +320,11 @@ ui.assignStageButton.addEventListener("click", async () => {
 });
 
 ui.createLiftButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before creating lifts.");
+    return;
+  }
+
   const activeStageId = staging.getActiveStageId();
 
   if (!activeStageId) {
@@ -343,6 +357,11 @@ ui.createLiftButton.addEventListener("click", async () => {
 });
 
 ui.stageSummary.addEventListener("click", async (event) => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before editing lifts.");
+    return;
+  }
+
   const liftActionButton = event.target.closest("[data-lift-action]");
 
   if (!liftActionButton) {
@@ -415,10 +434,19 @@ ui.stageSummary.addEventListener("click", async (event) => {
 });
 
 ui.stageSlider.addEventListener("input", async () => {
+  if (isPdfExporting) {
+    return;
+  }
+
   await showCurrentSliderStage();
 });
 
 ui.renameStageButton.addEventListener("click", () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before renaming stages.");
+    return;
+  }
+
   const activeStageId = staging.getActiveStageId();
 
   if (!activeStageId) {
@@ -451,6 +479,11 @@ ui.renameStageButton.addEventListener("click", () => {
 });
 
 ui.clearStageButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before clearing stages.");
+    return;
+  }
+
   const activeStageId = staging.getActiveStageId();
 
   if (!activeStageId) {
@@ -487,6 +520,11 @@ ui.clearStageButton.addEventListener("click", async () => {
 });
 
 ui.deleteStageButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before deleting stages.");
+    return;
+  }
+
   const activeStageId = staging.getActiveStageId();
 
   if (!activeStageId) {
@@ -527,6 +565,11 @@ ui.deleteStageButton.addEventListener("click", async () => {
 });
 
 ui.toggleModeButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before switching modes.");
+    return;
+  }
+
   if (mode === "staging") {
     enterSequencingMode();
 
@@ -542,6 +585,11 @@ ui.toggleModeButton.addEventListener("click", async () => {
 });
 
 ui.toggleContextButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before changing context view.");
+    return;
+  }
+
   showContext = !showContext;
 
   ui.toggleContextButton.textContent = showContext
@@ -552,6 +600,11 @@ ui.toggleContextButton.addEventListener("click", async () => {
 });
 
 ui.resetVisibilityButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before resetting visibility.");
+    return;
+  }
+
   try {
     await resetViewerVisualState();
     setStatus("Visibility reset.");
@@ -566,6 +619,11 @@ ui.resetVisibilityButton.addEventListener("click", async () => {
 // -----------------------------------------------------------------------------
 
 ui.saveProjectButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before saving.");
+    return;
+  }
+
   if (!currentIfcFile) {
     setStatus("Load an IFC file before saving the project.");
     return;
@@ -591,6 +649,11 @@ ui.saveProjectButton.addEventListener("click", async () => {
 });
 
 ui.projectFileInput.addEventListener("change", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before opening another project.");
+    return;
+  }
+
   console.log("1. Project file input changed");
 
   const projectFile = ui.projectFileInput.files[0];
@@ -675,6 +738,11 @@ ui.projectFileInput.addEventListener("change", async () => {
 // -----------------------------------------------------------------------------
 
 ui.toggleClippingButton.addEventListener("click", () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before changing clipping.");
+    return;
+  }
+
   const enabled = toggleClippingEnabled();
 
   ui.toggleClippingButton.textContent = enabled
@@ -689,6 +757,11 @@ ui.toggleClippingButton.addEventListener("click", () => {
 });
 
 ui.clearClippingButton.addEventListener("click", () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before clearing clipping planes.");
+    return;
+  }
+
   clearClippingPlanes();
   setStatus("Clipping planes cleared.");
 });
@@ -896,14 +969,17 @@ async function getGeometryIdsForItem({
 
   visited.add(localId);
 
-  // Case 1:
-  // The staged ID is already a real renderable geometry item.
+  // Important:
+  // Some IFC items are both:
+  // 1. directly renderable geometry IDs, and
+  // 2. parent/container IDs with child geometry.
+  //
+  // So do NOT return immediately just because this ID has geometry.
+  // Add it, then still inspect its children.
   if (geometryIds.has(localId)) {
     result.add(localId);
-    return result;
   }
 
-  // Safety limit so bad IFC relationships cannot cause runaway recursion.
   if (depth >= maxDepth) {
     return result;
   }
@@ -1023,6 +1099,8 @@ async function setOpacityForItems(items, opacity) {
 
     if (!model) continue;
 
+    if (!localIds || localIds.size === 0) continue;
+
     await model.setOpacity([...localIds], opacity);
   }
 
@@ -1132,6 +1210,12 @@ async function buildPdfExportBuckets(stageId) {
   console.log("PDF export buckets built:", {
     stageId,
     bucketCounts,
+    rawCurrentItems,
+    rawPreviousItems,
+    currentGeometryItems,
+    previousGeometryItems,
+    previousOnlyItems,
+    remainderItems,
     unresolvedCurrentItems,
     unresolvedPreviousItems,
   });
@@ -1532,6 +1616,11 @@ function hideLoadingOverlay() {
 // -----------------------------------------------------------------------------
 
 ui.saveStageViewButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before saving a view.");
+    return;
+  }
+
   const activeStageId = staging.getActiveStageId();
 
   if (!activeStageId) {
@@ -1567,6 +1656,11 @@ ui.saveStageViewButton.addEventListener("click", async () => {
 });
 
 ui.restoreStageViewButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before restoring a view.");
+    return;
+  }
+
   const activeStageId = staging.getActiveStageId();
 
   if (!activeStageId) {
@@ -1609,6 +1703,11 @@ ui.restoreStageViewButton.addEventListener("click", async () => {
 // -----------------------------------------------------------------------------
 
 ui.toggleLiftLabelsButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before toggling lift labels.");
+    return;
+  }
+
   if (mode !== "sequencing") {
     setStatus("Lift labels are only available in sequencing mode.");
     return;
