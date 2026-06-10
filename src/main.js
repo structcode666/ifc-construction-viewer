@@ -864,9 +864,13 @@ async function waitForAnimationFrames(count = 1) {
  * visually settle. This helper gives the renderer and DOM a final stable frame
  * before html-to-image captures the viewer.
  */
-async function waitForStableExportFrame() {
+async function waitForStableExportFrame({ frames = 6 } = {}) {
   await fragments.core.update(true);
-  await waitForAnimationFrames(2);
+
+  for (let i = 0; i < frames; i++) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    await fragments.core.update(true);
+  }
 
   try {
     world.renderer.three.render(world.scene.three, world.camera.three);
@@ -874,7 +878,7 @@ async function waitForStableExportFrame() {
     console.warn("Manual export render failed. Continuing anyway.", error);
   }
 
-  await waitForAnimationFrames(1);
+  await new Promise((resolve) => requestAnimationFrame(resolve));
 }
 
 // -----------------------------------------------------------------------------
@@ -1151,6 +1155,37 @@ function subtractManyModelIdMaps(allItems, mapsToRemove) {
   return result;
 }
 
+function assertExportBucketsCoverAllGeometry({
+  allGeometryItems,
+  currentGeometryItems,
+  previousOnlyItems,
+  remainderItems,
+}) {
+  const combinedExportItems = mergeModelIdMaps(
+    currentGeometryItems,
+    previousOnlyItems,
+    remainderItems
+  );
+
+  const missingItems = subtractModelIdMap(
+    allGeometryItems,
+    combinedExportItems
+  );
+
+  const missingCount = countItemsInModelIdMap(missingItems);
+
+  if (missingCount > 0) {
+    console.warn("PDF export bucket coverage warning:", {
+      missingCount,
+      missingItems,
+    });
+
+    return false;
+  }
+
+  return true;
+}
+
 function getPreviousStageItems(stageId) {
   const debugState = staging.debugState();
   const targetIndex = debugState.stages.findIndex(
@@ -1195,7 +1230,15 @@ async function buildPdfExportBuckets(stageId) {
     currentGeometryItems,
   ]);
 
+  const exportBucketsCoverAllGeometry = assertExportBucketsCoverAllGeometry({
+    allGeometryItems,
+    currentGeometryItems,
+    previousOnlyItems,
+    remainderItems,
+  });
+
   const bucketCounts = {
+    allGeometry: countItemsInModelIdMap(allGeometryItems),
     current: countItemsInModelIdMap(currentGeometryItems),
     previous: countItemsInModelIdMap(previousOnlyItems),
     remainder: countItemsInModelIdMap(remainderItems),
@@ -1205,6 +1248,7 @@ async function buildPdfExportBuckets(stageId) {
     unresolvedPrevious: countItemsInModelIdMap(
       objectOfArraysToObjectOfSets(unresolvedPreviousItems)
     ),
+    exportBucketsCoverAllGeometry,
   };
 
   console.log("PDF export buckets built:", {
@@ -1232,6 +1276,7 @@ async function buildPdfExportBuckets(stageId) {
   }
 
   return {
+    allGeometryItems,
     currentGeometryItems,
     previousOnlyItems,
     remainderItems,
@@ -1875,7 +1920,7 @@ async function restoreViewerAfterPdfExport(previousState) {
 async function prepareViewerForPdfExport(stage) {
   setStatus(`Preparing PDF export for ${stage.name}...`);
 
-  // Force the viewer into the state we want to capture.
+  // Force the app state into export mode.
   mode = "sequencing";
   showContext = false;
   showLiftLabels = true;
@@ -1891,10 +1936,10 @@ async function prepareViewerForPdfExport(stage) {
   setSliderToStageId(stage.id);
   staging.setActiveStage(stage.id);
 
-  // Apply export-only red/green/grey visual state.
-  await applyPdfExportVisualState(stage.id);
-
-  // Restore the saved stage camera, if one exists.
+  // Restore the saved stage camera first.
+  // Important:
+  // Camera movement can trigger fragment updates, so we do this before applying
+  // the export colours.
   const usedSavedView = await restoreSavedViewForStage(stage.id, {
     transition: false,
   });
@@ -1905,20 +1950,27 @@ async function prepareViewerForPdfExport(stage) {
     );
   }
 
-  // Re-render lift labels after the camera has moved.
-  await updateLiftLabelsForCurrentView();
-
-  // Make the export background white without permanently changing the app.
+  // Make the export background white before capture.
   world.scene.three.background = new THREE.Color("#ffffff");
   world.renderer.three.setClearColor("#ffffff", 1);
 
+  // Hide viewer UI controls during export capture.
   ui.viewerArea.classList.add("is-exporting");
 
-  await waitForStableExportFrame();
+  // Update lift labels after camera is in the export position.
+  await updateLiftLabelsForCurrentView();
+
+  // Critical:
+  // Apply export colours LAST, after camera/background/labels.
+  // This makes the red/green/grey state the final model-changing operation
+  // before screenshot capture.
+  await applyPdfExportVisualState(stage.id);
+
+  await waitForStableExportFrame({ frames: 6 });
 }
 
 async function captureStageSheetData(stage, drawingNumber = "DRAFT-001") {
-  await waitForStableExportFrame();
+  await waitForStableExportFrame({ frames: 6 });
 
   const rawImageDataUrl = await toPng(ui.viewerArea, {
     cacheBust: true,
