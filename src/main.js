@@ -38,6 +38,7 @@ let viewpoints = null;
 let liftLabels = null;
 
 let showLiftLabels = false;
+let isPdfExporting = false;
 
 const staging = createStagingManager();
 
@@ -807,6 +808,18 @@ async function waitForStableExportFrame() {
 // Visibility / opacity helpers
 // -----------------------------------------------------------------------------
 
+function countItemsInModelIdMap(modelIdMap) {
+  if (!modelIdMap) return 0;
+
+  let total = 0;
+
+  for (const localIds of Object.values(modelIdMap)) {
+    total += localIds?.size ?? 0;
+  }
+
+  return total;
+}
+
 function isModelIdMapEmpty(modelIdMap) {
   if (!modelIdMap) return true;
 
@@ -834,6 +847,152 @@ async function getAllGeometryItems() {
   }
 
   return allItems;
+}
+
+function extractRelatedIds(value, bucket = new Set()) {
+  if (value == null) return bucket;
+
+  if (typeof value === "number") {
+    bucket.add(value);
+    return bucket;
+  }
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      extractRelatedIds(item, bucket);
+    }
+
+    return bucket;
+  }
+
+  if (typeof value === "object") {
+    if (typeof value.localId === "number") bucket.add(value.localId);
+    if (typeof value.LocalId === "number") bucket.add(value.LocalId);
+    if (typeof value.id === "number") bucket.add(value.id);
+    if (typeof value.ID === "number") bucket.add(value.ID);
+    if (typeof value.value === "number") bucket.add(value.value);
+
+    for (const nestedValue of Object.values(value)) {
+      extractRelatedIds(nestedValue, bucket);
+    }
+  }
+
+  return bucket;
+}
+
+async function getGeometryIdsForItem({
+  model,
+  localId,
+  geometryIds,
+  visited = new Set(),
+  depth = 0,
+  maxDepth = 8,
+}) {
+  const result = new Set();
+
+  if (visited.has(localId)) {
+    return result;
+  }
+
+  visited.add(localId);
+
+  // Case 1:
+  // The staged ID is already a real renderable geometry item.
+  if (geometryIds.has(localId)) {
+    result.add(localId);
+    return result;
+  }
+
+  // Safety limit so bad IFC relationships cannot cause runaway recursion.
+  if (depth >= maxDepth) {
+    return result;
+  }
+
+  try {
+    const [itemData] = await model.getItemsData([localId], {
+      attributesDefault: true,
+      relations: {
+        IsDecomposedBy: { attributes: true, relations: false },
+        IsNestedBy: { attributes: true, relations: false },
+      },
+    });
+
+    if (!itemData) {
+      return result;
+    }
+
+    const childIds = new Set([
+      ...extractRelatedIds(itemData.IsDecomposedBy),
+      ...extractRelatedIds(itemData.IsNestedBy),
+    ]);
+
+    for (const childId of childIds) {
+      const childGeometryIds = await getGeometryIdsForItem({
+        model,
+        localId: childId,
+        geometryIds,
+        visited,
+        depth: depth + 1,
+        maxDepth,
+      });
+
+      for (const geometryId of childGeometryIds) {
+        result.add(geometryId);
+      }
+    }
+  } catch (error) {
+    console.warn(
+      `Could not resolve geometry descendants for localId ${localId}.`,
+      error
+    );
+  }
+
+  return result;
+}
+
+async function resolveSelectionToGeometryItems(selection, allGeometryItems) {
+  const resolved = {};
+  const unresolved = {};
+
+  for (const [modelId, localIds] of Object.entries(selection ?? {})) {
+    const model = fragments.list.get(modelId);
+    const geometryIds = allGeometryItems[modelId];
+
+    if (!model || !geometryIds) {
+      unresolved[modelId] = [...localIds];
+      continue;
+    }
+
+    for (const localId of localIds) {
+      const resolvedIds = await getGeometryIdsForItem({
+        model,
+        localId,
+        geometryIds,
+      });
+
+      if (resolvedIds.size === 0) {
+        if (!unresolved[modelId]) {
+          unresolved[modelId] = [];
+        }
+
+        unresolved[modelId].push(localId);
+        continue;
+      }
+
+      if (!resolved[modelId]) {
+        resolved[modelId] = new Set();
+      }
+
+      for (const resolvedId of resolvedIds) {
+        resolved[modelId].add(resolvedId);
+      }
+    }
+  }
+
+  return {
+    resolved,
+    unresolved,
+  };
 }
 
 function subtractModelIdMap(allItems, itemsToRemove) {
@@ -931,6 +1090,83 @@ function getPreviousStageItems(stageId) {
   return mergeModelIdMaps(...previousStageMaps);
 }
 
+async function buildPdfExportBuckets(stageId) {
+  const allGeometryItems = await getAllGeometryItems();
+
+  const rawCurrentItems = staging.getStageSelection(stageId);
+  const rawPreviousItems = getPreviousStageItems(stageId);
+
+  const {
+    resolved: currentGeometryItems,
+    unresolved: unresolvedCurrentItems,
+  } = await resolveSelectionToGeometryItems(rawCurrentItems, allGeometryItems);
+
+  const {
+    resolved: previousGeometryItems,
+    unresolved: unresolvedPreviousItems,
+  } = await resolveSelectionToGeometryItems(rawPreviousItems, allGeometryItems);
+
+  // Current stage should visually win over previous stages.
+  const previousOnlyItems = subtractModelIdMap(
+    previousGeometryItems,
+    currentGeometryItems
+  );
+
+  const remainderItems = subtractManyModelIdMaps(allGeometryItems, [
+    previousOnlyItems,
+    currentGeometryItems,
+  ]);
+
+  const bucketCounts = {
+    current: countItemsInModelIdMap(currentGeometryItems),
+    previous: countItemsInModelIdMap(previousOnlyItems),
+    remainder: countItemsInModelIdMap(remainderItems),
+    unresolvedCurrent: countItemsInModelIdMap(
+      objectOfArraysToObjectOfSets(unresolvedCurrentItems)
+    ),
+    unresolvedPrevious: countItemsInModelIdMap(
+      objectOfArraysToObjectOfSets(unresolvedPreviousItems)
+    ),
+  };
+
+  console.log("PDF export buckets built:", {
+    stageId,
+    bucketCounts,
+    unresolvedCurrentItems,
+    unresolvedPreviousItems,
+  });
+
+  if (bucketCounts.current === 0) {
+    console.warn(
+      "PDF export warning: current stage resolved to zero visible geometry items.",
+      {
+        stageId,
+        rawCurrentItems,
+        unresolvedCurrentItems,
+      }
+    );
+  }
+
+  return {
+    currentGeometryItems,
+    previousOnlyItems,
+    remainderItems,
+    unresolvedCurrentItems,
+    unresolvedPreviousItems,
+    bucketCounts,
+  };
+}
+
+function objectOfArraysToObjectOfSets(objectOfArrays) {
+  const result = {};
+
+  for (const [key, value] of Object.entries(objectOfArrays ?? {})) {
+    result[key] = new Set(value);
+  }
+
+  return result;
+}
+
 async function setColorForItems(items, colorHex) {
   const color = new THREE.Color(colorHex);
 
@@ -950,14 +1186,12 @@ async function setColorForItems(items, colorHex) {
 async function applyPdfExportVisualState(stageId) {
   const hider = components.get(OBC.Hider);
 
-  const currentStageItems = staging.getStageSelection(stageId);
-  const previousStageItems = getPreviousStageItems(stageId);
-  const allItems = await getAllGeometryItems();
-
-  const remainderItems = subtractManyModelIdMaps(allItems, [
-    previousStageItems,
-    currentStageItems,
-  ]);
+  const {
+    currentGeometryItems,
+    previousOnlyItems,
+    remainderItems,
+    bucketCounts,
+  } = await buildPdfExportBuckets(stageId);
 
   // Start from a clean model state.
   await hider.set(true);
@@ -971,27 +1205,25 @@ async function applyPdfExportVisualState(stageId) {
   await fragments.core.update(true);
 
   // Apply export-only colours.
+  //
   // Order matters:
-  // 1. Grey/transparent context first
+  // 1. Grey transparent context first
   // 2. Previous erected work second
-  // 3. Current stage last, so it visually wins if there is any overlap
-
+  // 3. Current stage last, so it visually wins
   await setColorForItems(remainderItems, "#b8b8b8");
   await setOpacityForItems(remainderItems, 0.18);
 
-  await setColorForItems(previousStageItems, "#5fa85f");
-  await setOpacityForItems(previousStageItems, 1.0);
+  await setColorForItems(previousOnlyItems, "#5fa85f");
+  await setOpacityForItems(previousOnlyItems, 1.0);
 
-  await setColorForItems(currentStageItems, "#d94f4f");
-  await setOpacityForItems(currentStageItems, 1.0);
+  await setColorForItems(currentGeometryItems, "#d94f4f");
+  await setOpacityForItems(currentGeometryItems, 1.0);
 
   await waitForStableExportFrame();
 
   console.log("Applied PDF export visual state:", {
     stageId,
-    previousStageItems,
-    currentStageItems,
-    remainderItems,
+    bucketCounts,
   });
 }
 
@@ -1613,6 +1845,13 @@ async function captureStageSheetData(stage, drawingNumber = "DRAFT-001") {
 }
 
 async function exportCurrentStagePdf(stage) {
+  if (isPdfExporting) {
+    setStatus("PDF export already in progress.");
+    return;
+  }
+
+  isPdfExporting = true;
+
   const previousState = captureCurrentViewerStateForExportRestore();
 
   try {
@@ -1628,6 +1867,7 @@ async function exportCurrentStagePdf(stage) {
     setStatus("PDF export failed.");
   } finally {
     await restoreViewerAfterPdfExport(previousState);
+    isPdfExporting = false;
   }
 }
 
@@ -1643,6 +1883,13 @@ ui.exportAllStagesPdfButton.addEventListener("click", async () => {
 });
 
 async function exportAllStagesPdf() {
+  if (isPdfExporting) {
+    setStatus("PDF export already in progress.");
+    return;
+  }
+
+  isPdfExporting = true;
+
   const previousState = captureCurrentViewerStateForExportRestore();
   const stageSheets = [];
 
@@ -1679,6 +1926,7 @@ async function exportAllStagesPdf() {
     setStatus("Export all stages failed.");
   } finally {
     await restoreViewerAfterPdfExport(previousState);
+    isPdfExporting = false;
   }
 }
 
