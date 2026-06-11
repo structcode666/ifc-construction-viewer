@@ -23,6 +23,16 @@ import * as THREE from "three";
 
 const ui = getUI();
 
+const PDF_EXPORT_PIXEL_RATIO = 1.5;
+const PDF_EXPORT_SETTLE_FRAMES = 4;
+const PDF_CAPTURE_TIMEOUT_MS = 20000;
+const PDF_CROP_TIMEOUT_MS = 15000;
+const PDF_EXPORT_COLORS = {
+  context: "#b8b8b8",
+  previous: "#6fa86f",
+  current: "#cc6666",
+};
+
 let components = null;
 let world = null;
 let orbitControls = null;
@@ -891,6 +901,20 @@ async function waitForStableExportFrame({ frames = 6 } = {}) {
   await new Promise((resolve) => requestAnimationFrame(resolve));
 }
 
+function withTimeout(promise, timeoutMs, label) {
+  let timeoutId = null;
+
+  const timeout = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms.`));
+    }, timeoutMs);
+  });
+
+  return Promise.race([promise, timeout]).finally(() => {
+    window.clearTimeout(timeoutId);
+  });
+}
+
 // -----------------------------------------------------------------------------
 // Visibility / opacity helpers
 // -----------------------------------------------------------------------------
@@ -1107,7 +1131,7 @@ function subtractModelIdMap(allItems, itemsToRemove) {
   return result;
 }
 
-async function setOpacityForItems(items, opacity) {
+async function setOpacityForItems(items, opacity, { update = true } = {}) {
   for (const [modelId, localIds] of Object.entries(items)) {
     const model = fragments.list.get(modelId);
 
@@ -1118,7 +1142,9 @@ async function setOpacityForItems(items, opacity) {
     await model.setOpacity([...localIds], opacity);
   }
 
-  await fragments.core.update(true);
+  if (update) {
+    await fragments.core.update(true);
+  }
 }
 
 function mergeModelIdMaps(...maps) {
@@ -1213,22 +1239,16 @@ function getPreviousStageItems(stageId) {
   return mergeModelIdMaps(...previousStageMaps);
 }
 
-async function buildPdfExportBuckets(stageId) {
-  const allGeometryItems = await getAllGeometryItems();
-
-  const rawCurrentItems = staging.getStageSelection(stageId);
-  const rawPreviousItems = getPreviousStageItems(stageId);
-
-  const {
-    resolved: currentGeometryItems,
-    unresolved: unresolvedCurrentItems,
-  } = await resolveSelectionToGeometryItems(rawCurrentItems, allGeometryItems);
-
-  const {
-    resolved: previousGeometryItems,
-    unresolved: unresolvedPreviousItems,
-  } = await resolveSelectionToGeometryItems(rawPreviousItems, allGeometryItems);
-
+function createPdfExportBuckets({
+  stageId,
+  allGeometryItems,
+  currentGeometryItems,
+  previousGeometryItems,
+  unresolvedCurrentItems = {},
+  unresolvedPreviousItems = {},
+  rawCurrentItems = {},
+  rawPreviousItems = {},
+}) {
   // Current stage should visually win over previous stages.
   const previousOnlyItems = subtractModelIdMap(
     previousGeometryItems,
@@ -1296,6 +1316,78 @@ async function buildPdfExportBuckets(stageId) {
   };
 }
 
+async function buildPdfExportBuckets(stageId) {
+  const allGeometryItems = await getAllGeometryItems();
+
+  const rawCurrentItems = staging.getStageSelection(stageId);
+  const rawPreviousItems = getPreviousStageItems(stageId);
+
+  const {
+    resolved: currentGeometryItems,
+    unresolved: unresolvedCurrentItems,
+  } = await resolveSelectionToGeometryItems(rawCurrentItems, allGeometryItems);
+
+  const {
+    resolved: previousGeometryItems,
+    unresolved: unresolvedPreviousItems,
+  } = await resolveSelectionToGeometryItems(rawPreviousItems, allGeometryItems);
+
+  return createPdfExportBuckets({
+    stageId,
+    allGeometryItems,
+    currentGeometryItems,
+    previousGeometryItems,
+    unresolvedCurrentItems,
+    unresolvedPreviousItems,
+    rawCurrentItems,
+    rawPreviousItems,
+  });
+}
+
+async function buildPdfExportPlan(stages) {
+  const allGeometryItems = await getAllGeometryItems();
+  const resolvedStageItems = new Map();
+  const unresolvedStageItems = new Map();
+
+  for (const stage of stages) {
+    const { resolved, unresolved } = await resolveSelectionToGeometryItems(
+      stage.items,
+      allGeometryItems
+    );
+
+    resolvedStageItems.set(stage.id, resolved);
+    unresolvedStageItems.set(stage.id, unresolved);
+  }
+
+  const bucketsByStageId = new Map();
+  let previousGeometryItems = {};
+  let rawPreviousItems = {};
+
+  for (const stage of stages) {
+    const currentGeometryItems = resolvedStageItems.get(stage.id) ?? {};
+
+    const buckets = createPdfExportBuckets({
+      stageId: stage.id,
+      allGeometryItems,
+      currentGeometryItems,
+      previousGeometryItems,
+      unresolvedCurrentItems: unresolvedStageItems.get(stage.id) ?? {},
+      unresolvedPreviousItems: {},
+      rawCurrentItems: stage.items,
+      rawPreviousItems,
+    });
+
+    bucketsByStageId.set(stage.id, buckets);
+    previousGeometryItems = mergeModelIdMaps(
+      previousGeometryItems,
+      currentGeometryItems
+    );
+    rawPreviousItems = mergeModelIdMaps(rawPreviousItems, stage.items);
+  }
+
+  return bucketsByStageId;
+}
+
 function objectOfArraysToObjectOfSets(objectOfArrays) {
   const result = {};
 
@@ -1306,7 +1398,7 @@ function objectOfArraysToObjectOfSets(objectOfArrays) {
   return result;
 }
 
-async function setColorForItems(items, colorHex) {
+async function setColorForItems(items, colorHex, { update = true } = {}) {
   const color = new THREE.Color(colorHex);
 
   for (const [modelId, localIds] of Object.entries(items ?? {})) {
@@ -1319,10 +1411,35 @@ async function setColorForItems(items, colorHex) {
     await model.setColor([...localIds], color);
   }
 
+  if (update) {
+    await fragments.core.update(true);
+  }
+}
+
+async function applyPdfExportBucketStyles({
+  currentGeometryItems,
+  previousOnlyItems,
+  remainderItems,
+}) {
+  await setColorForItems(remainderItems, PDF_EXPORT_COLORS.context, {
+    update: false,
+  });
+  await setOpacityForItems(remainderItems, 0.18, { update: false });
+
+  await setColorForItems(previousOnlyItems, PDF_EXPORT_COLORS.previous, {
+    update: false,
+  });
+  await setOpacityForItems(previousOnlyItems, 1.0, { update: false });
+
+  await setColorForItems(currentGeometryItems, PDF_EXPORT_COLORS.current, {
+    update: false,
+  });
+  await setOpacityForItems(currentGeometryItems, 1.0, { update: false });
+
   await fragments.core.update(true);
 }
 
-async function applyPdfExportVisualState(stageId) {
+async function applyPdfExportVisualState(stageId, preparedBuckets = null) {
   const hider = components.get(OBC.Hider);
 
   const {
@@ -1330,7 +1447,7 @@ async function applyPdfExportVisualState(stageId) {
     previousOnlyItems,
     remainderItems,
     bucketCounts,
-  } = await buildPdfExportBuckets(stageId);
+  } = preparedBuckets ?? (await buildPdfExportBuckets(stageId));
 
   // Start from a clean model state.
   await hider.set(true);
@@ -1341,24 +1458,15 @@ async function applyPdfExportVisualState(stageId) {
     await model.resetOpacity();
   }
 
-  await fragments.core.update(true);
+  // Apply export-only colours. Order matters: context first, previous work
+  // second, current stage last so it visually wins.
+  await applyPdfExportBucketStyles({
+    currentGeometryItems,
+    previousOnlyItems,
+    remainderItems,
+  });
 
-  // Apply export-only colours.
-  //
-  // Order matters:
-  // 1. Grey transparent context first
-  // 2. Previous erected work second
-  // 3. Current stage last, so it visually wins
-  await setColorForItems(remainderItems, "#b8b8b8");
-  await setOpacityForItems(remainderItems, 0.18);
-
-  await setColorForItems(previousOnlyItems, "#5fa85f");
-  await setOpacityForItems(previousOnlyItems, 1.0);
-
-  await setColorForItems(currentGeometryItems, "#d94f4f");
-  await setOpacityForItems(currentGeometryItems, 1.0);
-
-  await waitForStableExportFrame();
+  await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
 
   console.log("Applied PDF export visual state:", {
     stageId,
@@ -1927,7 +2035,7 @@ async function restoreViewerAfterPdfExport(previousState) {
   await showCurrentSliderStage();
 }
 
-async function prepareViewerForPdfExport(stage) {
+async function prepareViewerForPdfExport(stage, preparedBuckets = null) {
   setStatus(`Preparing PDF export for ${stage.name}...`);
 
   // Force the app state into export mode.
@@ -1974,24 +2082,32 @@ async function prepareViewerForPdfExport(stage) {
   // Apply export colours LAST, after camera/background/labels.
   // This makes the red/green/grey state the final model-changing operation
   // before screenshot capture.
-  await applyPdfExportVisualState(stage.id);
+  await applyPdfExportVisualState(stage.id, preparedBuckets);
 
-  await waitForStableExportFrame({ frames: 6 });
+  await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
 }
 
 async function captureStageSheetData(stage, drawingNumber = "DRAFT-001") {
-  await waitForStableExportFrame({ frames: 6 });
+  await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
 
-  const rawImageDataUrl = await toPng(ui.viewerArea, {
-    cacheBust: true,
-    pixelRatio: 2,
-    backgroundColor: "#ffffff",
-  });
+  const rawImageDataUrl = await withTimeout(
+    toPng(ui.viewerArea, {
+      cacheBust: true,
+      pixelRatio: PDF_EXPORT_PIXEL_RATIO,
+      backgroundColor: "#ffffff",
+    }),
+    PDF_CAPTURE_TIMEOUT_MS,
+    `PDF image capture for ${stage.name}`
+  );
 
-  const croppedCapture = await cropWhitespaceFromImage(rawImageDataUrl, {
-    threshold: 248,
-    paddingRatio: 0.06,
-  });
+  const croppedCapture = await withTimeout(
+    cropWhitespaceFromImage(rawImageDataUrl, {
+      threshold: 248,
+      paddingRatio: 0.06,
+    }),
+    PDF_CROP_TIMEOUT_MS,
+    `PDF image crop for ${stage.name}`
+  );
 
   return {
     imageDataUrl: croppedCapture.imageDataUrl,
@@ -2027,8 +2143,14 @@ async function exportCurrentStagePdf(stage) {
     console.error("PDF export failed:", error);
     setStatus("PDF export failed.");
   } finally {
-    await restoreViewerAfterPdfExport(previousState);
-    isPdfExporting = false;
+    try {
+      await restoreViewerAfterPdfExport(previousState);
+    } catch (restoreError) {
+      console.error("Failed to restore viewer after PDF export:", restoreError);
+      setStatus("PDF export finished, but viewer restore failed.");
+    } finally {
+      isPdfExporting = false;
+    }
   }
 }
 
@@ -2053,41 +2175,71 @@ async function exportAllStagesPdf() {
 
   const previousState = captureCurrentViewerStateForExportRestore();
   const stageSheets = [];
+  const failedStages = [];
 
   try {
-    const stages = staging.getStages();
+    const stages = staging
+      .getStages()
+      .map((stage) => staging.getStageById(stage.id))
+      .filter(Boolean);
+
+    setStatus(`Preparing export data for ${stages.length} stages...`);
+
+    const exportPlan = await buildPdfExportPlan(stages);
 
     for (let index = 0; index < stages.length; index++) {
-      const summaryStage = stages[index];
-      const fullStage = staging.getStageById(summaryStage.id);
-
-      if (!fullStage) {
-        continue;
-      }
+      const fullStage = stages[index];
+      const preparedBuckets = exportPlan.get(fullStage.id);
 
       setStatus(
         `Exporting ${fullStage.name} (${index + 1} / ${stages.length})...`
       );
 
-      await prepareViewerForPdfExport(fullStage);
+      try {
+        await prepareViewerForPdfExport(fullStage, preparedBuckets);
 
-      const stageSheetData = await captureStageSheetData(
-        fullStage,
-        `DRAFT-${String(index + 1).padStart(3, "0")}`
-      );
+        const stageSheetData = await captureStageSheetData(
+          fullStage,
+          `DRAFT-${String(index + 1).padStart(3, "0")}`
+        );
 
-      stageSheets.push(stageSheetData);
+        stageSheets.push(stageSheetData);
+      } catch (stageError) {
+        console.error(`Failed to export ${fullStage.name}:`, stageError);
+        failedStages.push(fullStage.name);
+      }
+    }
+
+    if (stageSheets.length === 0) {
+      throw new Error("No stages were captured successfully.");
     }
 
     exportMultipleStageImagesToPdf(stageSheets);
 
-    setStatus(`Exported ${stageSheets.length} stages to combined PDF.`);
+    if (failedStages.length > 0) {
+      setStatus(
+        `Exported ${stageSheets.length} stages. Failed: ${failedStages.join(
+          ", "
+        )}.`
+      );
+    } else {
+      setStatus(`Exported ${stageSheets.length} stages to combined PDF.`);
+    }
   } catch (error) {
     console.error("Export all stages failed:", error);
     setStatus("Export all stages failed.");
   } finally {
-    await restoreViewerAfterPdfExport(previousState);
-    isPdfExporting = false;
+    try {
+      await restoreViewerAfterPdfExport(previousState);
+    } catch (restoreError) {
+      console.error(
+        "Failed to restore viewer after exporting all stages:",
+        restoreError
+      );
+      setStatus("Export finished, but viewer restore failed.");
+    } finally {
+      isPdfExporting = false;
+    }
   }
 }
 
