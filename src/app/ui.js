@@ -30,6 +30,13 @@ export function getUI() {
     toggleClippingButton: document.getElementById("toggleClippingButton"),
     clearClippingButton: document.getElementById("clearClippingButton"),
 
+    measureLengthButton: document.getElementById("measureLengthButton"),
+    measureAreaButton: document.getElementById("measureAreaButton"),
+    measureAngleButton: document.getElementById("measureAngleButton"),
+    measureVolumeButton: document.getElementById("measureVolumeButton"),
+    deleteMeasurementButton: document.getElementById("deleteMeasurementButton"),
+    clearMeasurementsButton: document.getElementById("clearMeasurementsButton"),
+
 
     saveProjectButton: document.getElementById("saveProjectButton"),
     projectFileInput: document.getElementById("projectFileInput"),

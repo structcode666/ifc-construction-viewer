@@ -751,7 +751,8 @@ button:disabled {
    SECTION CUT VIEWER TOOL
 ========================= */
 
-.section-cut-toolbar {
+.section-cut-toolbar,
+.measurement-toolbar {
   width: 230px;
   padding: 0.85rem;
 
@@ -785,7 +786,8 @@ button:disabled {
   color: #94a3b8;
 }
 
-.section-cut-toolbar .viewer-pill-button {
+.section-cut-toolbar .viewer-pill-button,
+.measurement-toolbar .viewer-pill-button {
   width: 100%;
   min-width: 0;
   min-height: 36px;
@@ -794,6 +796,12 @@ button:disabled {
   border-radius: 12px;
 
   font-size: 0.75rem;
+}
+
+.measurement-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
 }
 
 .viewer-pill-button.primary {

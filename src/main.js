@@ -12,6 +12,7 @@ import {
 } from "./viewer/clipper.js";
 import { saveProjectFile, readProjectFile } from "./app/projectStorage.js";
 import { createLiftLabelManager } from "./viewer/liftLabels.js";
+import { initMeasurements } from "./viewer/measurements.js";
 
 import { toPng } from "html-to-image";
 import {
@@ -41,6 +42,8 @@ let currentModel = null;
 let currentIfcFile = null;
 
 let selection = null;
+let measurements = null;
+let activeMeasurementTool = null;
 let mode = "staging";
 let showContext = false;
 
@@ -149,6 +152,15 @@ async function startApp() {
     },
   });
 
+  measurements = initMeasurements({
+    components,
+    world,
+    ui,
+    onActiveToolChanged: (toolName) => {
+      activeMeasurementTool = toolName;
+    },
+  });
+
   selection = initSelection({
     components,
     world,
@@ -156,8 +168,8 @@ async function startApp() {
     ui,
 
     // Prevent selection/highlight changes while the model is temporarily dressed
-    // for PDF export.
-    canSelect: () => !isPdfExporting,
+    // for PDF export or while a measurement tool is taking pointer input.
+    canSelect: () => !isPdfExporting && !activeMeasurementTool,
   });
 
   await initClipping({
