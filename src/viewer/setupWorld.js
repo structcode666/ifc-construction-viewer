@@ -20,6 +20,8 @@ export async function setupWorld(container) {
 
   await world.camera.controls.setLookAt(12, 10, 8, 0, 0, 0);
 
+  world.camera.controls.dollySpeed = 0.45;
+
   world.camera.set("Orbit");
   world.camera.setUserInput(true);
 
