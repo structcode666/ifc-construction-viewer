@@ -213,6 +213,33 @@ export function createStagingManager() {
     };
   }
 
+  function setLiftLabelPosition(stageId, liftId, position) {
+    const lift = getLiftById(stageId, liftId);
+
+    if (!lift) {
+      return {
+        ok: false,
+        reason: "Lift not found.",
+      };
+    }
+
+    lift.label = {
+      ...(lift.label ?? {}),
+      position: position
+        ? {
+            x: position.x,
+            y: position.y,
+            z: position.z,
+          }
+        : null,
+    };
+
+    return {
+      ok: true,
+      lift,
+    };
+  }
+
   function deleteStage(stageId) {
     const index = state.stages.findIndex((stage) => stage.id === stageId);
 
@@ -603,6 +630,7 @@ export function createStagingManager() {
 
     renameStage,
     renameLift,
+    setLiftLabelPosition,
 
     deleteStage,
     deleteLift,

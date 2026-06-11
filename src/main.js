@@ -127,6 +127,16 @@ async function startApp() {
     components,
     world,
     fragments,
+    onLabelPositionChanged: ({ stageId, liftId, position }) => {
+      const result = staging.setLiftLabelPosition(stageId, liftId, position);
+
+      if (!result.ok) {
+        console.warn("Failed to save lift label position:", result.reason);
+        return;
+      }
+
+      setStatus("Lift label position updated.");
+    },
   });
 
   selection = initSelection({
