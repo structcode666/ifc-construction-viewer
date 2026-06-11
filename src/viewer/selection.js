@@ -23,6 +23,7 @@ export function initSelection({
   };
 
   let pointerDownPosition = null;
+  let areaSelection = null;
   const clickThreshold = 5;
 
   function getSelectionStats(modelIdMap) {
@@ -128,6 +129,171 @@ export function initSelection({
     }
 
     return nextSelection;
+  }
+
+  function getContainerPoint(event) {
+    const rect = ui.viewerContainer.getBoundingClientRect();
+
+    return {
+      x: event.clientX - rect.left,
+      y: event.clientY - rect.top,
+    };
+  }
+
+  function getRectangleFromPoints(start, end) {
+    return {
+      left: Math.min(start.x, end.x),
+      right: Math.max(start.x, end.x),
+      top: Math.min(start.y, end.y),
+      bottom: Math.max(start.y, end.y),
+    };
+  }
+
+  function rectanglesIntersect(a, b) {
+    return (
+      a.left <= b.right &&
+      a.right >= b.left &&
+      a.top <= b.bottom &&
+      a.bottom >= b.top
+    );
+  }
+
+  function createAreaSelectionBox() {
+    const box = document.createElement("div");
+    box.className = "area-selection-box";
+    ui.viewerContainer.appendChild(box);
+    return box;
+  }
+
+  function updateAreaSelectionBox() {
+    if (!areaSelection) return;
+
+    const rectangle = getRectangleFromPoints(
+      areaSelection.start,
+      areaSelection.current
+    );
+
+    areaSelection.box.style.left = `${rectangle.left}px`;
+    areaSelection.box.style.top = `${rectangle.top}px`;
+    areaSelection.box.style.width = `${rectangle.right - rectangle.left}px`;
+    areaSelection.box.style.height = `${rectangle.bottom - rectangle.top}px`;
+  }
+
+  function removeAreaSelectionBox() {
+    if (!areaSelection) return;
+
+    areaSelection.box.remove();
+  }
+
+  function cancelAreaSelection(event) {
+    if (!areaSelection || event.pointerId !== areaSelection.pointerId) return;
+
+    removeAreaSelectionBox();
+    areaSelection = null;
+    world.camera.setUserInput(true);
+
+    if (ui.viewerContainer.hasPointerCapture(event.pointerId)) {
+      ui.viewerContainer.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  function getBoxScreenRectangle(box) {
+    const camera = world.camera.three;
+    const containerRect = ui.viewerContainer.getBoundingClientRect();
+    const points = [
+      new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+      new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+      new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+      new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+      new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+      new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+      new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+      new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+    ];
+
+    let left = Infinity;
+    let right = -Infinity;
+    let top = Infinity;
+    let bottom = -Infinity;
+    let hasPointInFront = false;
+
+    for (const point of points) {
+      point.project(camera);
+
+      if (point.z < -1 || point.z > 1) continue;
+
+      hasPointInFront = true;
+
+      const x = ((point.x + 1) / 2) * containerRect.width;
+      const y = ((1 - point.y) / 2) * containerRect.height;
+
+      left = Math.min(left, x);
+      right = Math.max(right, x);
+      top = Math.min(top, y);
+      bottom = Math.max(bottom, y);
+    }
+
+    if (!hasPointInFront) return null;
+
+    return { left, right, top, bottom };
+  }
+
+  async function getVisibleIds(model, localIds) {
+    if (typeof model.getVisible !== "function") {
+      return localIds;
+    }
+
+    const visibility = await model.getVisible(localIds);
+
+    return localIds.filter((_, index) => visibility[index]);
+  }
+
+  async function getAreaSelection(rectangle) {
+    const selectedModelIdMap = {};
+
+    for (const [modelId, model] of fragments.list) {
+      if (typeof model.getItemsIdsWithGeometry !== "function") continue;
+      if (typeof model.getBoxes !== "function") continue;
+
+      const geometryIds = Array.from(await model.getItemsIdsWithGeometry());
+      const visibleIds = await getVisibleIds(model, geometryIds);
+      const boxes = await model.getBoxes(visibleIds);
+
+      for (let index = 0; index < visibleIds.length; index++) {
+        const screenRectangle = getBoxScreenRectangle(boxes[index]);
+
+        if (!screenRectangle) continue;
+        if (!rectanglesIntersect(rectangle, screenRectangle)) continue;
+
+        if (!selectedModelIdMap[modelId]) {
+          selectedModelIdMap[modelId] = new Set();
+        }
+
+        selectedModelIdMap[modelId].add(visibleIds[index]);
+      }
+    }
+
+    return selectedModelIdMap;
+  }
+
+  async function applyAreaSelection({ rectangle, isMultiSelect }) {
+    const areaModelIdMap = await getAreaSelection(rectangle);
+    const stats = getSelectionStats(areaModelIdMap);
+
+    if (isMultiSelect) {
+      const toggledSelection = toggleModelIdMapInSelection(
+        selectedItem,
+        areaModelIdMap
+      );
+
+      await applySelection(toggledSelection);
+    } else {
+      await applySelection(areaModelIdMap);
+    }
+
+    if (stats.selectedIdCount > 0) {
+      setStatus(`Area selected ${stats.selectedIdCount} item(s).`);
+    }
   }
 
   async function clearSelection() {
@@ -339,13 +505,71 @@ export function initSelection({
   }
 
   ui.viewerContainer.addEventListener("pointerdown", (event) => {
+    if (event.shiftKey) {
+      const start = getContainerPoint(event);
+
+      areaSelection = {
+        pointerId: event.pointerId,
+        start,
+        current: start,
+        box: createAreaSelectionBox(),
+      };
+
+      pointerDownPosition = null;
+      ui.viewerContainer.setPointerCapture(event.pointerId);
+      world.camera.setUserInput(false);
+      updateAreaSelectionBox();
+      event.preventDefault();
+      return;
+    }
+
     pointerDownPosition = {
       x: event.clientX,
       y: event.clientY,
     };
   });
 
+  ui.viewerContainer.addEventListener("pointermove", (event) => {
+    if (!areaSelection || event.pointerId !== areaSelection.pointerId) return;
+
+    areaSelection.current = getContainerPoint(event);
+    updateAreaSelectionBox();
+  });
+
   ui.viewerContainer.addEventListener("pointerup", async (event) => {
+    if (areaSelection && event.pointerId === areaSelection.pointerId) {
+      const finishedAreaSelection = areaSelection;
+      const rectangle = getRectangleFromPoints(
+        finishedAreaSelection.start,
+        finishedAreaSelection.current
+      );
+      const width = rectangle.right - rectangle.left;
+      const height = rectangle.bottom - rectangle.top;
+
+      removeAreaSelectionBox();
+      areaSelection = null;
+      world.camera.setUserInput(true);
+
+      if (ui.viewerContainer.hasPointerCapture(event.pointerId)) {
+        ui.viewerContainer.releasePointerCapture(event.pointerId);
+      }
+
+      if (!canSelect()) return;
+      if (width <= clickThreshold || height <= clickThreshold) return;
+
+      try {
+        await applyAreaSelection({
+          rectangle,
+          isMultiSelect: event.ctrlKey,
+        });
+      } catch (error) {
+        console.error("Area selection error:", error);
+        setStatus("Area selection failed.");
+      }
+
+      return;
+    }
+
     if (!canSelect()) {
       pointerDownPosition = null;
       return;
@@ -370,6 +594,8 @@ export function initSelection({
       setStatus("Selection failed.");
     }
   });
+
+  ui.viewerContainer.addEventListener("pointercancel", cancelAreaSelection);
 
   ui.hideSelectedButton.addEventListener("click", async () => {
     if (!selectedItem) {
