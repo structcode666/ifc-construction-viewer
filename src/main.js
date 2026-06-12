@@ -29,13 +29,14 @@ const PDF_EXPORT_SETTLE_FRAMES = 4;
 const PDF_CAPTURE_TIMEOUT_MS = 20000;
 const PDF_CROP_TIMEOUT_MS = 15000;
 const FRAGMENT_STYLE_CHUNK_SIZE = 1000;
+const FRAGMENT_STYLE_MIN_CHUNK_SIZE = 25;
 const PDF_EXPORT_USE_OPACITY = false;
 const PDF_CONTEXT_ITEM_LIMIT = 8000;
 const PDF_TOTAL_ITEM_LIMIT_FOR_FULL_CONTEXT = 15000;
 const PDF_EXPORT_COLORS = {
-  context: "#b8b8b8",
-  previous: "#6fa86f",
-  current: "#cc6666",
+  context: "#d0d0d0",
+  previous: "#00b050",
+  current: "#ff0000",
 };
 
 let components = null;
@@ -1273,37 +1274,21 @@ async function applyFragmentStyleInChunks({
         chunk: chunkDetails,
       });
 
-      try {
-        await applyChunk({ model, modelId, chunk, index, ids });
-      } catch (error) {
-        if (!recoverMemoryOverflow || !isFragmentsMemoryOverflow(error)) {
-          logPdfExportBreadcrumb(
-            context,
-            `${operationName} failed.`,
-            {
-              chunk: chunkDetails,
-              error: getErrorDetails(error),
-            },
-            "error"
-          );
-          throw error;
-        }
+      const chunkApplied = await applyFragmentStyleChunkWithRecovery({
+        operationName,
+        applyChunk,
+        model,
+        modelId,
+        chunk,
+        index,
+        ids,
+        chunkDetails,
+        context,
+        recoverMemoryOverflow,
+      });
 
+      if (!chunkApplied) {
         applied = false;
-        if (context && operationName.startsWith("setOpacity")) {
-          context.opacityDisabled = true;
-        }
-
-        logPdfExportBreadcrumb(
-          context,
-          `${operationName} hit the fragments memory budget and will be skipped.`,
-          {
-            chunk: chunkDetails,
-            error: getErrorDetails(error),
-          },
-          "warn"
-        );
-        break;
       }
     }
   }
@@ -1313,6 +1298,109 @@ async function applyFragmentStyleInChunks({
   }
 
   return applied;
+}
+
+async function applyFragmentStyleChunkWithRecovery({
+  operationName,
+  applyChunk,
+  model,
+  modelId,
+  chunk,
+  index,
+  ids,
+  chunkDetails,
+  context = null,
+  recoverMemoryOverflow = true,
+}) {
+  try {
+    await applyChunk({ model, modelId, chunk, index, ids });
+    return true;
+  } catch (error) {
+    if (!recoverMemoryOverflow || !isFragmentsMemoryOverflow(error)) {
+      logPdfExportBreadcrumb(
+        context,
+        `${operationName} failed.`,
+        {
+          chunk: chunkDetails,
+          error: getErrorDetails(error),
+        },
+        "error"
+      );
+      throw error;
+    }
+
+    if (chunk.length > FRAGMENT_STYLE_MIN_CHUNK_SIZE) {
+      const splitIndex = Math.ceil(chunk.length / 2);
+      const firstChunk = chunk.slice(0, splitIndex);
+      const secondChunk = chunk.slice(splitIndex);
+
+      logPdfExportBreadcrumb(
+        context,
+        `${operationName} chunk hit the fragments memory budget. Retrying with smaller chunks.`,
+        {
+          chunk: chunkDetails,
+          retryChunkSizes: [firstChunk.length, secondChunk.length],
+          error: getErrorDetails(error),
+        },
+        "warn"
+      );
+
+      const firstApplied = await applyFragmentStyleChunkWithRecovery({
+        operationName,
+        applyChunk,
+        model,
+        modelId,
+        chunk: firstChunk,
+        index,
+        ids,
+        chunkDetails: {
+          ...chunkDetails,
+          chunkEnd: chunkDetails.chunkStart + firstChunk.length - 1,
+          chunkSize: firstChunk.length,
+          sampleIds: firstChunk.slice(0, 8),
+        },
+        context,
+        recoverMemoryOverflow,
+      });
+
+      const secondApplied = await applyFragmentStyleChunkWithRecovery({
+        operationName,
+        applyChunk,
+        model,
+        modelId,
+        chunk: secondChunk,
+        index: index + splitIndex,
+        ids,
+        chunkDetails: {
+          ...chunkDetails,
+          chunkStart: chunkDetails.chunkStart + splitIndex,
+          chunkEnd: chunkDetails.chunkEnd,
+          chunkSize: secondChunk.length,
+          sampleIds: secondChunk.slice(0, 8),
+        },
+        context,
+        recoverMemoryOverflow,
+      });
+
+      return firstApplied && secondApplied;
+    }
+
+    if (context && operationName.startsWith("setOpacity")) {
+      context.opacityDisabled = true;
+    }
+
+    logPdfExportBreadcrumb(
+      context,
+      `${operationName} chunk hit the fragments memory budget and will be skipped.`,
+      {
+        chunk: chunkDetails,
+        error: getErrorDetails(error),
+      },
+      "warn"
+    );
+
+    return false;
+  }
 }
 
 async function setOpacityForItems(
@@ -1709,40 +1797,60 @@ async function applyPdfExportBucketStyles({
     );
   }
 
-  const contextApplied = await setColorForItems(
-    contextItemsForExport,
-    PDF_EXPORT_COLORS.context,
-    {
-      update: false,
-      context,
-      stage,
-      bucketName: useFullContext
-        ? "context/remainder/full"
-        : "context/remainder/limited",
-    }
-  );
+  let contextApplied = true;
+  let previousApplied = true;
+  let currentApplied = true;
 
-  const previousApplied = await setColorForItems(
-    previousOnlyItems,
-    PDF_EXPORT_COLORS.previous,
-    {
-      update: false,
-      context,
-      stage,
-      bucketName: "previous",
-    }
-  );
+  const applyContext = async () => {
+    contextApplied = await setColorForItems(
+      contextItemsForExport,
+      PDF_EXPORT_COLORS.context,
+      {
+        update: false,
+        context,
+        stage,
+        bucketName: useFullContext
+          ? "context/remainder/full"
+          : "context/remainder/limited",
+      }
+    );
+  };
 
-  const currentApplied = await setColorForItems(
-    currentGeometryItems,
-    PDF_EXPORT_COLORS.current,
-    {
-      update: false,
-      context,
-      stage,
-      bucketName: "current",
-    }
-  );
+  const applyPrevious = async () => {
+    previousApplied = await setColorForItems(
+      previousOnlyItems,
+      PDF_EXPORT_COLORS.previous,
+      {
+        update: false,
+        context,
+        stage,
+        bucketName: "previous",
+      }
+    );
+  };
+
+  const applyCurrent = async () => {
+    currentApplied = await setColorForItems(
+      currentGeometryItems,
+      PDF_EXPORT_COLORS.current,
+      {
+        update: false,
+        context,
+        stage,
+        bucketName: "current",
+      }
+    );
+  };
+
+  if (useFullContext) {
+    await applyContext();
+    await applyPrevious();
+    await applyCurrent();
+  } else {
+    await applyCurrent();
+    await applyPrevious();
+    await applyContext();
+  }
 
   logFailedPdfColorBuckets({
     context,
@@ -1753,6 +1861,18 @@ async function applyPdfExportBucketStyles({
       current: currentApplied,
     },
     bucketCounts,
+  });
+
+  logPdfExportBreadcrumb(context, "PDF export colour bucket results.", {
+    stageId: stage?.id,
+    stageName: stage?.name,
+    useFullContext,
+    bucketCounts,
+    applied: {
+      context: contextApplied,
+      previous: previousApplied,
+      current: currentApplied,
+    },
   });
 
   await fragments.core.update(true);
