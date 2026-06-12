@@ -29,6 +29,9 @@ const PDF_EXPORT_SETTLE_FRAMES = 4;
 const PDF_CAPTURE_TIMEOUT_MS = 20000;
 const PDF_CROP_TIMEOUT_MS = 15000;
 const FRAGMENT_STYLE_CHUNK_SIZE = 1000;
+const PDF_EXPORT_USE_OPACITY = false;
+const PDF_CONTEXT_ITEM_LIMIT = 8000;
+const PDF_TOTAL_ITEM_LIMIT_FOR_FULL_CONTEXT = 15000;
 const PDF_EXPORT_COLORS = {
   context: "#b8b8b8",
   previous: "#6fa86f",
@@ -888,7 +891,6 @@ async function waitForAnimationFrames(count = 1) {
  * Why it exists:
  * PDF export changes several independent systems:
  * - fragment colours
- * - fragment opacity
  * - camera/viewpoint
  * - lift-label DOM markers
  * - CSS export class
@@ -982,7 +984,6 @@ function createPdfExportContext(label, stages = []) {
     id: `pdf-export-${pdfExportRunNumber}`,
     label,
     startedAt: new Date().toISOString(),
-    opacityDisabled: false,
     stages: stages.map((stage) => ({
       id: stage.id,
       name: stage.name,
@@ -1021,9 +1022,11 @@ function getErrorDetails(error) {
 }
 
 function logPdfExportBreadcrumb(context, message, details = {}, level = "log") {
+  if (!context) return;
+
   const logger = console[level] ?? console.log;
 
-  logger(`[PDF Export][${context?.id ?? "no-trace"}] ${message}`, {
+  logger(`[PDF Export][${context.id}] ${message}`, {
     trace: context,
     ...details,
   });
@@ -1287,7 +1290,7 @@ async function applyFragmentStyleInChunks({
         }
 
         applied = false;
-        if (context) {
+        if (context && operationName.startsWith("setOpacity")) {
           context.opacityDisabled = true;
         }
 
@@ -1604,6 +1607,25 @@ function objectOfArraysToObjectOfSets(objectOfArrays) {
   return result;
 }
 
+function limitModelIdMapItems(modelIdMap, maxItems) {
+  const limited = {};
+  let remaining = maxItems;
+
+  for (const [modelId, localIds] of Object.entries(modelIdMap ?? {})) {
+    if (remaining <= 0) break;
+
+    const ids = [...(localIds ?? [])];
+    const selectedIds = ids.slice(0, remaining);
+
+    if (selectedIds.length > 0) {
+      limited[modelId] = new Set(selectedIds);
+      remaining -= selectedIds.length;
+    }
+  }
+
+  return limited;
+}
+
 async function setColorForItems(
   items,
   colorHex,
@@ -1626,87 +1648,35 @@ async function setColorForItems(
     stage,
     bucketName,
     update,
-    recoverMemoryOverflow: false,
+    recoverMemoryOverflow: true,
   });
 }
 
-async function resetModelColorAndOpacityForExport(context, stage) {
-  logPdfExportBreadcrumb(context, "Resetting fragment colours and opacity.", {
-    stageId: stage?.id,
-    stageName: stage?.name,
-    loadedModelIds: [...fragments.list.keys()],
-  });
+function logFailedPdfColorBuckets({
+  context,
+  stage,
+  bucketResults,
+  bucketCounts,
+}) {
+  const failedBuckets = Object.entries(bucketResults)
+    .filter(([, applied]) => !applied)
+    .map(([bucketName]) => bucketName);
 
-  for (const [modelId, model] of fragments.list) {
-    try {
-      logPdfExportBreadcrumb(context, "Resetting model colour.", {
-        stageId: stage?.id,
-        stageName: stage?.name,
-        modelId,
-      });
-      await model.resetColor();
-    } catch (error) {
-      logPdfExportBreadcrumb(
-        context,
-        "Model colour reset failed.",
-        {
-          stageId: stage?.id,
-          stageName: stage?.name,
-          modelId,
-          error: getErrorDetails(error),
-        },
-        "error"
-      );
-      throw error;
-    }
-
-    if (context?.opacityDisabled) {
-      logPdfExportBreadcrumb(
-        context,
-        "Skipped model opacity reset because opacity is disabled for this export run.",
-        { stageId: stage?.id, stageName: stage?.name, modelId },
-        "warn"
-      );
-      continue;
-    }
-
-    try {
-      logPdfExportBreadcrumb(context, "Resetting model opacity.", {
-        stageId: stage?.id,
-        stageName: stage?.name,
-        modelId,
-      });
-      await model.resetOpacity();
-    } catch (error) {
-      if (!isFragmentsMemoryOverflow(error)) {
-        logPdfExportBreadcrumb(
-          context,
-          "Model opacity reset failed.",
-          {
-            stageId: stage?.id,
-            stageName: stage?.name,
-            modelId,
-            error: getErrorDetails(error),
-          },
-          "error"
-        );
-        throw error;
-      }
-
-      context.opacityDisabled = true;
-      logPdfExportBreadcrumb(
-        context,
-        "Model opacity reset exceeded the fragments memory budget. Opacity is disabled for the rest of this export run.",
-        {
-          stageId: stage?.id,
-          stageName: stage?.name,
-          modelId,
-          error: getErrorDetails(error),
-        },
-        "warn"
-      );
-    }
+  if (failedBuckets.length === 0) {
+    return;
   }
+
+  logPdfExportBreadcrumb(
+    context,
+    "One or more PDF export colour buckets hit the fragments memory budget. Continuing with the colours that were applied.",
+    {
+      stageId: stage?.id,
+      stageName: stage?.name,
+      failedBuckets,
+      bucketCounts,
+    },
+    "warn"
+  );
 }
 
 async function applyPdfExportBucketStyles({
@@ -1715,59 +1685,74 @@ async function applyPdfExportBucketStyles({
   currentGeometryItems,
   previousOnlyItems,
   remainderItems,
+  bucketCounts,
 }) {
-  await setColorForItems(remainderItems, PDF_EXPORT_COLORS.context, {
-    update: false,
-    context,
-    stage,
-    bucketName: "context/remainder",
-  });
-  const contextOpacityApplied = await setOpacityForItems(remainderItems, 0.18, {
-    update: false,
-    context,
-    stage,
-    bucketName: "context/remainder",
-  });
+  const useFullContext =
+    bucketCounts.allGeometry <= PDF_TOTAL_ITEM_LIMIT_FOR_FULL_CONTEXT;
 
-  if (!contextOpacityApplied) {
-    for (const [modelId, model] of fragments.list) {
-      try {
-        await model.resetOpacity();
-      } catch (error) {
-        logPdfExportBreadcrumb(
-          context,
-          "Opacity fallback reset failed. Continuing with opacity disabled.",
-          {
-            stageId: stage?.id,
-            stageName: stage?.name,
-            modelId,
-            error: getErrorDetails(error),
-          },
-          "warn"
-        );
-      }
-    }
+  const contextItemsForExport = useFullContext
+    ? remainderItems
+    : limitModelIdMapItems(remainderItems, PDF_CONTEXT_ITEM_LIMIT);
 
+  if (!useFullContext) {
     logPdfExportBreadcrumb(
       context,
-      "PDF export will use opaque grey context because transparent context exceeded the fragments memory budget.",
-      { stageId: stage?.id, stageName: stage?.name },
+      "Large model detected. PDF export will colour only limited grey context to avoid fragments memory overflow.",
+      {
+        stageId: stage?.id,
+        stageName: stage?.name,
+        bucketCounts,
+        contextLimit: PDF_CONTEXT_ITEM_LIMIT,
+        limitedContextSummary: summarizeModelIdMap(contextItemsForExport),
+      },
       "warn"
     );
   }
 
-  await setColorForItems(previousOnlyItems, PDF_EXPORT_COLORS.previous, {
-    update: false,
-    context,
-    stage,
-    bucketName: "previous",
-  });
+  const contextApplied = await setColorForItems(
+    contextItemsForExport,
+    PDF_EXPORT_COLORS.context,
+    {
+      update: false,
+      context,
+      stage,
+      bucketName: useFullContext
+        ? "context/remainder/full"
+        : "context/remainder/limited",
+    }
+  );
 
-  await setColorForItems(currentGeometryItems, PDF_EXPORT_COLORS.current, {
-    update: false,
+  const previousApplied = await setColorForItems(
+    previousOnlyItems,
+    PDF_EXPORT_COLORS.previous,
+    {
+      update: false,
+      context,
+      stage,
+      bucketName: "previous",
+    }
+  );
+
+  const currentApplied = await setColorForItems(
+    currentGeometryItems,
+    PDF_EXPORT_COLORS.current,
+    {
+      update: false,
+      context,
+      stage,
+      bucketName: "current",
+    }
+  );
+
+  logFailedPdfColorBuckets({
     context,
     stage,
-    bucketName: "current",
+    bucketResults: {
+      context: contextApplied,
+      previous: previousApplied,
+      current: currentApplied,
+    },
+    bucketCounts,
   });
 
   await fragments.core.update(true);
@@ -1792,23 +1777,24 @@ async function applyPdfExportVisualState(
     stageId,
     stageName: stage.name,
     bucketCounts,
-    opacityDisabled: context?.opacityDisabled ?? false,
+    useOpacity: PDF_EXPORT_USE_OPACITY,
   });
 
-  // Start from a clean model state.
   await hider.set(true);
   await fragments.resetHighlight();
 
-  await resetModelColorAndOpacityForExport(context, stage);
+  for (const [, model] of fragments.list) {
+    await model.resetColor();
+    await model.resetOpacity();
+  }
 
-  // Apply export-only colours. Order matters: context first, previous work
-  // second, current stage last so it visually wins.
   await applyPdfExportBucketStyles({
     context,
     stage,
     currentGeometryItems,
     previousOnlyItems,
     remainderItems,
+    bucketCounts,
   });
 
   await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
@@ -2481,10 +2467,9 @@ async function prepareViewerForPdfExport(
   // Update lift labels after camera is in the export position.
   await updateLiftLabelsForCurrentView();
 
-  // Critical:
-  // Apply export colours LAST, after camera/background/labels.
-  // This makes the red/green/grey state the final model-changing operation
-  // before screenshot capture.
+  // Apply fragment colours after camera/background/labels are ready. This path
+  // intentionally avoids PDF opacity and caps large grey context buckets to
+  // reduce the chance of Fragments memory overflow.
   await applyPdfExportVisualState(stage, preparedBuckets, context);
 
   await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
@@ -2624,7 +2609,6 @@ async function exportAllStagesPdf() {
           stageId: fullStage.id,
           stageName: fullStage.name,
           bucketCounts: preparedBuckets?.bucketCounts,
-          opacityDisabled: exportContext.opacityDisabled,
         });
 
         await prepareViewerForPdfExport(
@@ -2655,7 +2639,6 @@ async function exportAllStagesPdf() {
             stageId: fullStage.id,
             stageName: fullStage.name,
             bucketCounts: preparedBuckets?.bucketCounts,
-            opacityDisabled: exportContext.opacityDisabled,
             error: getErrorDetails(stageError),
           },
           "error"
@@ -2672,7 +2655,6 @@ async function exportAllStagesPdf() {
     logPdfExportBreadcrumb(exportContext, "Created combined PDF.", {
       capturedStageCount: stageSheets.length,
       failedStages,
-      opacityDisabled: exportContext.opacityDisabled,
     });
 
     if (failedStages.length > 0) {
