@@ -28,6 +28,7 @@ const PDF_EXPORT_PIXEL_RATIO = 1.5;
 const PDF_EXPORT_SETTLE_FRAMES = 4;
 const PDF_CAPTURE_TIMEOUT_MS = 20000;
 const PDF_CROP_TIMEOUT_MS = 15000;
+const FRAGMENT_STYLE_CHUNK_SIZE = 1000;
 const PDF_EXPORT_COLORS = {
   context: "#b8b8b8",
   previous: "#6fa86f",
@@ -52,6 +53,7 @@ let liftLabels = null;
 
 let showLiftLabels = false;
 let isPdfExporting = false;
+let pdfExportRunNumber = 0;
 
 const staging = createStagingManager();
 
@@ -961,6 +963,72 @@ function isModelIdMapEmpty(modelIdMap) {
   return true;
 }
 
+function isFragmentsMemoryOverflow(error) {
+  return getErrorMessage(error).includes("Fragments: Memory overflow");
+}
+
+function getErrorMessage(error) {
+  if (!error) return "";
+
+  if (typeof error === "string") return error;
+
+  return error.message || String(error);
+}
+
+function createPdfExportContext(label, stages = []) {
+  pdfExportRunNumber += 1;
+
+  return {
+    id: `pdf-export-${pdfExportRunNumber}`,
+    label,
+    startedAt: new Date().toISOString(),
+    opacityDisabled: false,
+    stages: stages.map((stage) => ({
+      id: stage.id,
+      name: stage.name,
+      itemCount: countItemsInModelIdMap(stage.items),
+      liftCount: stage.lifts?.length ?? 0,
+    })),
+  };
+}
+
+function summarizeModelIdMap(modelIdMap) {
+  const byModel = {};
+  let total = 0;
+
+  for (const [modelId, localIds] of Object.entries(modelIdMap ?? {})) {
+    const ids = [...(localIds ?? [])];
+    total += ids.length;
+    byModel[modelId] = {
+      count: ids.length,
+      sampleIds: ids.slice(0, 8),
+    };
+  }
+
+  return {
+    total,
+    modelCount: Object.keys(byModel).length,
+    byModel,
+  };
+}
+
+function getErrorDetails(error) {
+  return {
+    name: error?.name,
+    message: getErrorMessage(error),
+    stack: error?.stack,
+  };
+}
+
+function logPdfExportBreadcrumb(context, message, details = {}, level = "log") {
+  const logger = console[level] ?? console.log;
+
+  logger(`[PDF Export][${context?.id ?? "no-trace"}] ${message}`, {
+    trace: context,
+    ...details,
+  });
+}
+
 async function getAllGeometryItems() {
   const allItems = {};
 
@@ -1143,20 +1211,146 @@ function subtractModelIdMap(allItems, itemsToRemove) {
   return result;
 }
 
-async function setOpacityForItems(items, opacity, { update = true } = {}) {
-  for (const [modelId, localIds] of Object.entries(items)) {
+async function applyFragmentStyleInChunks({
+  items,
+  operationName,
+  applyChunk,
+  context = null,
+  stage = null,
+  bucketName = "unknown",
+  update = true,
+  recoverMemoryOverflow = true,
+}) {
+  let applied = true;
+
+  logPdfExportBreadcrumb(context, `Starting ${operationName}.`, {
+    stageId: stage?.id,
+    stageName: stage?.name,
+    bucketName,
+    itemSummary: summarizeModelIdMap(items),
+  });
+
+  for (const [modelId, localIds] of Object.entries(items ?? {})) {
     const model = fragments.list.get(modelId);
 
-    if (!model) continue;
+    if (!model) {
+      logPdfExportBreadcrumb(
+        context,
+        `Skipped ${operationName}; model was not loaded.`,
+        { stageId: stage?.id, stageName: stage?.name, bucketName, modelId },
+        "warn"
+      );
+      continue;
+    }
 
     if (!localIds || localIds.size === 0) continue;
 
-    await model.setOpacity([...localIds], opacity);
+    const ids = [...localIds];
+
+    for (
+      let index = 0;
+      index < ids.length;
+      index += FRAGMENT_STYLE_CHUNK_SIZE
+    ) {
+      const chunk = ids.slice(index, index + FRAGMENT_STYLE_CHUNK_SIZE);
+      const chunkDetails = {
+        stageId: stage?.id,
+        stageName: stage?.name,
+        bucketName,
+        modelId,
+        operationName,
+        chunkStart: index,
+        chunkEnd: index + chunk.length - 1,
+        chunkSize: chunk.length,
+        totalModelItems: ids.length,
+        sampleIds: chunk.slice(0, 8),
+      };
+
+      logPdfExportBreadcrumb(context, `Applying ${operationName} chunk.`, {
+        chunk: chunkDetails,
+      });
+
+      try {
+        await applyChunk({ model, modelId, chunk, index, ids });
+      } catch (error) {
+        if (!recoverMemoryOverflow || !isFragmentsMemoryOverflow(error)) {
+          logPdfExportBreadcrumb(
+            context,
+            `${operationName} failed.`,
+            {
+              chunk: chunkDetails,
+              error: getErrorDetails(error),
+            },
+            "error"
+          );
+          throw error;
+        }
+
+        applied = false;
+        if (context) {
+          context.opacityDisabled = true;
+        }
+
+        logPdfExportBreadcrumb(
+          context,
+          `${operationName} hit the fragments memory budget and will be skipped.`,
+          {
+            chunk: chunkDetails,
+            error: getErrorDetails(error),
+          },
+          "warn"
+        );
+        break;
+      }
+    }
   }
 
   if (update) {
     await fragments.core.update(true);
   }
+
+  return applied;
+}
+
+async function setOpacityForItems(
+  items,
+  opacity,
+  {
+    update = true,
+    context = null,
+    stage = null,
+    bucketName = "unknown",
+  } = {}
+) {
+  if (context?.opacityDisabled) {
+    logPdfExportBreadcrumb(
+      context,
+      "Skipped opacity because this export run already exceeded the fragments opacity memory budget.",
+      {
+        stageId: stage?.id,
+        stageName: stage?.name,
+        bucketName,
+        opacity,
+        itemSummary: summarizeModelIdMap(items),
+      },
+      "warn"
+    );
+
+    return false;
+  }
+
+  return applyFragmentStyleInChunks({
+    items,
+    operationName: `setOpacity(${opacity})`,
+    applyChunk: async ({ model, chunk }) => {
+      await model.setOpacity(chunk, opacity);
+    },
+    context,
+    stage,
+    bucketName,
+    update,
+    recoverMemoryOverflow: true,
+  });
 }
 
 function mergeModelIdMaps(...maps) {
@@ -1410,49 +1604,182 @@ function objectOfArraysToObjectOfSets(objectOfArrays) {
   return result;
 }
 
-async function setColorForItems(items, colorHex, { update = true } = {}) {
+async function setColorForItems(
+  items,
+  colorHex,
+  {
+    update = true,
+    context = null,
+    stage = null,
+    bucketName = "unknown",
+  } = {}
+) {
   const color = new THREE.Color(colorHex);
 
-  for (const [modelId, localIds] of Object.entries(items ?? {})) {
-    const model = fragments.list.get(modelId);
+  return applyFragmentStyleInChunks({
+    items,
+    operationName: `setColor(${colorHex})`,
+    applyChunk: async ({ model, chunk }) => {
+      await model.setColor(chunk, color);
+    },
+    context,
+    stage,
+    bucketName,
+    update,
+    recoverMemoryOverflow: false,
+  });
+}
 
-    if (!model) continue;
+async function resetModelColorAndOpacityForExport(context, stage) {
+  logPdfExportBreadcrumb(context, "Resetting fragment colours and opacity.", {
+    stageId: stage?.id,
+    stageName: stage?.name,
+    loadedModelIds: [...fragments.list.keys()],
+  });
 
-    if (!localIds || localIds.size === 0) continue;
+  for (const [modelId, model] of fragments.list) {
+    try {
+      logPdfExportBreadcrumb(context, "Resetting model colour.", {
+        stageId: stage?.id,
+        stageName: stage?.name,
+        modelId,
+      });
+      await model.resetColor();
+    } catch (error) {
+      logPdfExportBreadcrumb(
+        context,
+        "Model colour reset failed.",
+        {
+          stageId: stage?.id,
+          stageName: stage?.name,
+          modelId,
+          error: getErrorDetails(error),
+        },
+        "error"
+      );
+      throw error;
+    }
 
-    await model.setColor([...localIds], color);
-  }
+    if (context?.opacityDisabled) {
+      logPdfExportBreadcrumb(
+        context,
+        "Skipped model opacity reset because opacity is disabled for this export run.",
+        { stageId: stage?.id, stageName: stage?.name, modelId },
+        "warn"
+      );
+      continue;
+    }
 
-  if (update) {
-    await fragments.core.update(true);
+    try {
+      logPdfExportBreadcrumb(context, "Resetting model opacity.", {
+        stageId: stage?.id,
+        stageName: stage?.name,
+        modelId,
+      });
+      await model.resetOpacity();
+    } catch (error) {
+      if (!isFragmentsMemoryOverflow(error)) {
+        logPdfExportBreadcrumb(
+          context,
+          "Model opacity reset failed.",
+          {
+            stageId: stage?.id,
+            stageName: stage?.name,
+            modelId,
+            error: getErrorDetails(error),
+          },
+          "error"
+        );
+        throw error;
+      }
+
+      context.opacityDisabled = true;
+      logPdfExportBreadcrumb(
+        context,
+        "Model opacity reset exceeded the fragments memory budget. Opacity is disabled for the rest of this export run.",
+        {
+          stageId: stage?.id,
+          stageName: stage?.name,
+          modelId,
+          error: getErrorDetails(error),
+        },
+        "warn"
+      );
+    }
   }
 }
 
 async function applyPdfExportBucketStyles({
+  context,
+  stage,
   currentGeometryItems,
   previousOnlyItems,
   remainderItems,
 }) {
   await setColorForItems(remainderItems, PDF_EXPORT_COLORS.context, {
     update: false,
+    context,
+    stage,
+    bucketName: "context/remainder",
   });
-  await setOpacityForItems(remainderItems, 0.18, { update: false });
+  const contextOpacityApplied = await setOpacityForItems(remainderItems, 0.18, {
+    update: false,
+    context,
+    stage,
+    bucketName: "context/remainder",
+  });
+
+  if (!contextOpacityApplied) {
+    for (const [modelId, model] of fragments.list) {
+      try {
+        await model.resetOpacity();
+      } catch (error) {
+        logPdfExportBreadcrumb(
+          context,
+          "Opacity fallback reset failed. Continuing with opacity disabled.",
+          {
+            stageId: stage?.id,
+            stageName: stage?.name,
+            modelId,
+            error: getErrorDetails(error),
+          },
+          "warn"
+        );
+      }
+    }
+
+    logPdfExportBreadcrumb(
+      context,
+      "PDF export will use opaque grey context because transparent context exceeded the fragments memory budget.",
+      { stageId: stage?.id, stageName: stage?.name },
+      "warn"
+    );
+  }
 
   await setColorForItems(previousOnlyItems, PDF_EXPORT_COLORS.previous, {
     update: false,
+    context,
+    stage,
+    bucketName: "previous",
   });
-  await setOpacityForItems(previousOnlyItems, 1.0, { update: false });
 
   await setColorForItems(currentGeometryItems, PDF_EXPORT_COLORS.current, {
     update: false,
+    context,
+    stage,
+    bucketName: "current",
   });
-  await setOpacityForItems(currentGeometryItems, 1.0, { update: false });
 
   await fragments.core.update(true);
 }
 
-async function applyPdfExportVisualState(stageId, preparedBuckets = null) {
+async function applyPdfExportVisualState(
+  stage,
+  preparedBuckets = null,
+  context = null
+) {
   const hider = components.get(OBC.Hider);
+  const stageId = stage.id;
 
   const {
     currentGeometryItems,
@@ -1461,18 +1788,24 @@ async function applyPdfExportVisualState(stageId, preparedBuckets = null) {
     bucketCounts,
   } = preparedBuckets ?? (await buildPdfExportBuckets(stageId));
 
+  logPdfExportBreadcrumb(context, "Applying PDF export visual state.", {
+    stageId,
+    stageName: stage.name,
+    bucketCounts,
+    opacityDisabled: context?.opacityDisabled ?? false,
+  });
+
   // Start from a clean model state.
   await hider.set(true);
   await fragments.resetHighlight();
 
-  for (const [, model] of fragments.list) {
-    await model.resetColor();
-    await model.resetOpacity();
-  }
+  await resetModelColorAndOpacityForExport(context, stage);
 
   // Apply export-only colours. Order matters: context first, previous work
   // second, current stage last so it visually wins.
   await applyPdfExportBucketStyles({
+    context,
+    stage,
     currentGeometryItems,
     previousOnlyItems,
     remainderItems,
@@ -1480,8 +1813,9 @@ async function applyPdfExportVisualState(stageId, preparedBuckets = null) {
 
   await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
 
-  console.log("Applied PDF export visual state:", {
+  logPdfExportBreadcrumb(context, "Applied PDF export visual state.", {
     stageId,
+    stageName: stage.name,
     bucketCounts,
   });
 }
@@ -1523,9 +1857,15 @@ async function showCurrentSliderStage() {
         const assignedItems = mergeAllStageItems();
 
         if (!isModelIdMapEmpty(assignedItems)) {
-          await setOpacityForItems(assignedItems, 0.15);
+          const opacityApplied = await setOpacityForItems(assignedItems, 0.15);
+          if (!opacityApplied) {
+            await resetAllOpacity();
+          }
+
           setStatus(
-            "Staging mode: assigned elements shown as transparent context."
+            opacityApplied
+              ? "Staging mode: assigned elements shown as transparent context."
+              : "Staging mode: assigned elements shown. Transparent context was skipped for this large model."
           );
           return;
         }
@@ -1589,11 +1929,18 @@ async function showCurrentSliderStage() {
     const allItems = await getAllGeometryItems();
     const contextItems = subtractModelIdMap(allItems, itemsToShow);
 
-    await setOpacityForItems(contextItems, 0.15);
+    const opacityApplied = await setOpacityForItems(contextItems, 0.15);
+    if (!opacityApplied) {
+      await resetAllOpacity();
+    }
 
     await updateLiftLabelsForCurrentView();
 
-    setStatus(`Showing ${stage.name} with transparent context.`);
+    setStatus(
+      opacityApplied
+        ? `Showing ${stage.name} with transparent context.`
+        : `Showing ${stage.name}. Transparent context was skipped for this large model.`
+    );
   } catch (error) {
     console.error("Failed to show stage:", error);
     setStatus("Failed to update stage view.");
@@ -1985,7 +2332,12 @@ function captureCurrentViewerStateForExportRestore() {
   };
 }
 
-async function restoreViewerAfterPdfExport(previousState) {
+async function restoreViewerAfterPdfExport(previousState, context = null) {
+  logPdfExportBreadcrumb(context, "Restoring viewer after PDF export.", {
+    previousMode: previousState.mode,
+    previousActiveStageId: previousState.activeStageId,
+  });
+
   ui.viewerArea.classList.remove("is-exporting");
 
   world.scene.three.background = previousState.sceneBackground;
@@ -1996,9 +2348,39 @@ async function restoreViewerAfterPdfExport(previousState) {
 
   await fragments.resetHighlight();
 
-  for (const [, model] of fragments.list) {
-    await model.resetColor();
-    await model.resetOpacity();
+  for (const [modelId, model] of fragments.list) {
+    try {
+      await model.resetColor();
+    } catch (error) {
+      logPdfExportBreadcrumb(
+        context,
+        "Viewer restore colour reset failed.",
+        { modelId, error: getErrorDetails(error) },
+        "error"
+      );
+      throw error;
+    }
+
+    try {
+      await model.resetOpacity();
+    } catch (error) {
+      if (!isFragmentsMemoryOverflow(error)) {
+        logPdfExportBreadcrumb(
+          context,
+          "Viewer restore opacity reset failed.",
+          { modelId, error: getErrorDetails(error) },
+          "error"
+        );
+        throw error;
+      }
+
+      logPdfExportBreadcrumb(
+        context,
+        "Viewer restore opacity reset exceeded the fragments memory budget. Continuing without opacity reset.",
+        { modelId, error: getErrorDetails(error) },
+        "warn"
+      );
+    }
   }
 
   await fragments.core.update(true);
@@ -2047,8 +2429,17 @@ async function restoreViewerAfterPdfExport(previousState) {
   await showCurrentSliderStage();
 }
 
-async function prepareViewerForPdfExport(stage, preparedBuckets = null) {
+async function prepareViewerForPdfExport(
+  stage,
+  preparedBuckets = null,
+  context = null
+) {
   setStatus(`Preparing PDF export for ${stage.name}...`);
+  logPdfExportBreadcrumb(context, "Preparing viewer for PDF export.", {
+    stageId: stage.id,
+    stageName: stage.name,
+    bucketCounts: preparedBuckets?.bucketCounts,
+  });
 
   // Force the app state into export mode.
   mode = "sequencing";
@@ -2094,7 +2485,7 @@ async function prepareViewerForPdfExport(stage, preparedBuckets = null) {
   // Apply export colours LAST, after camera/background/labels.
   // This makes the red/green/grey state the final model-changing operation
   // before screenshot capture.
-  await applyPdfExportVisualState(stage.id, preparedBuckets);
+  await applyPdfExportVisualState(stage, preparedBuckets, context);
 
   await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
 }
@@ -2105,6 +2496,7 @@ async function captureStageSheetData(stage, drawingNumber = "DRAFT-001") {
   const rawImageDataUrl = await withTimeout(
     toPng(ui.viewerArea, {
       cacheBust: true,
+      fontEmbedCSS: "",
       pixelRatio: PDF_EXPORT_PIXEL_RATIO,
       backgroundColor: "#ffffff",
     }),
@@ -2142,23 +2534,37 @@ async function exportCurrentStagePdf(stage) {
   isPdfExporting = true;
 
   const previousState = captureCurrentViewerStateForExportRestore();
+  const exportContext = createPdfExportContext("single-stage", [stage]);
 
   try {
-    await prepareViewerForPdfExport(stage);
+    logPdfExportBreadcrumb(exportContext, "Started single-stage PDF export.");
+
+    await prepareViewerForPdfExport(stage, null, exportContext);
 
     const stageSheetData = await captureStageSheetData(stage, "DRAFT-001");
 
     exportStageImageToPdf(stageSheetData);
 
+    logPdfExportBreadcrumb(exportContext, "Completed single-stage PDF export.");
     setStatus(`Exported PDF for ${stage.name}.`);
   } catch (error) {
-    console.error("PDF export failed:", error);
+    logPdfExportBreadcrumb(
+      exportContext,
+      "PDF export failed.",
+      { error: getErrorDetails(error) },
+      "error"
+    );
     setStatus("PDF export failed.");
   } finally {
     try {
-      await restoreViewerAfterPdfExport(previousState);
+      await restoreViewerAfterPdfExport(previousState, exportContext);
     } catch (restoreError) {
-      console.error("Failed to restore viewer after PDF export:", restoreError);
+      logPdfExportBreadcrumb(
+        exportContext,
+        "Failed to restore viewer after PDF export.",
+        { error: getErrorDetails(restoreError) },
+        "error"
+      );
       setStatus("PDF export finished, but viewer restore failed.");
     } finally {
       isPdfExporting = false;
@@ -2188,14 +2594,19 @@ async function exportAllStagesPdf() {
   const previousState = captureCurrentViewerStateForExportRestore();
   const stageSheets = [];
   const failedStages = [];
+  let exportContext = null;
 
   try {
     const stages = staging
       .getStages()
       .map((stage) => staging.getStageById(stage.id))
       .filter(Boolean);
+    exportContext = createPdfExportContext("all-stages", stages);
 
     setStatus(`Preparing export data for ${stages.length} stages...`);
+    logPdfExportBreadcrumb(exportContext, "Started all-stages PDF export.", {
+      stageCount: stages.length,
+    });
 
     const exportPlan = await buildPdfExportPlan(stages);
 
@@ -2208,7 +2619,19 @@ async function exportAllStagesPdf() {
       );
 
       try {
-        await prepareViewerForPdfExport(fullStage, preparedBuckets);
+        logPdfExportBreadcrumb(exportContext, "Starting stage export.", {
+          stageIndex: index,
+          stageId: fullStage.id,
+          stageName: fullStage.name,
+          bucketCounts: preparedBuckets?.bucketCounts,
+          opacityDisabled: exportContext.opacityDisabled,
+        });
+
+        await prepareViewerForPdfExport(
+          fullStage,
+          preparedBuckets,
+          exportContext
+        );
 
         const stageSheetData = await captureStageSheetData(
           fullStage,
@@ -2216,8 +2639,27 @@ async function exportAllStagesPdf() {
         );
 
         stageSheets.push(stageSheetData);
+        logPdfExportBreadcrumb(exportContext, "Captured stage sheet.", {
+          stageIndex: index,
+          stageId: fullStage.id,
+          stageName: fullStage.name,
+          imagePixelWidth: stageSheetData.imagePixelWidth,
+          imagePixelHeight: stageSheetData.imagePixelHeight,
+        });
       } catch (stageError) {
-        console.error(`Failed to export ${fullStage.name}:`, stageError);
+        logPdfExportBreadcrumb(
+          exportContext,
+          `Failed to export ${fullStage.name}.`,
+          {
+            stageIndex: index,
+            stageId: fullStage.id,
+            stageName: fullStage.name,
+            bucketCounts: preparedBuckets?.bucketCounts,
+            opacityDisabled: exportContext.opacityDisabled,
+            error: getErrorDetails(stageError),
+          },
+          "error"
+        );
         failedStages.push(fullStage.name);
       }
     }
@@ -2227,6 +2669,11 @@ async function exportAllStagesPdf() {
     }
 
     exportMultipleStageImagesToPdf(stageSheets);
+    logPdfExportBreadcrumb(exportContext, "Created combined PDF.", {
+      capturedStageCount: stageSheets.length,
+      failedStages,
+      opacityDisabled: exportContext.opacityDisabled,
+    });
 
     if (failedStages.length > 0) {
       setStatus(
@@ -2238,15 +2685,22 @@ async function exportAllStagesPdf() {
       setStatus(`Exported ${stageSheets.length} stages to combined PDF.`);
     }
   } catch (error) {
-    console.error("Export all stages failed:", error);
+    logPdfExportBreadcrumb(
+      exportContext,
+      "Export all stages failed.",
+      { error: getErrorDetails(error) },
+      "error"
+    );
     setStatus("Export all stages failed.");
   } finally {
     try {
-      await restoreViewerAfterPdfExport(previousState);
+      await restoreViewerAfterPdfExport(previousState, exportContext);
     } catch (restoreError) {
-      console.error(
-        "Failed to restore viewer after exporting all stages:",
-        restoreError
+      logPdfExportBreadcrumb(
+        exportContext,
+        "Failed to restore viewer after exporting all stages.",
+        { error: getErrorDetails(restoreError) },
+        "error"
       );
       setStatus("Export finished, but viewer restore failed.");
     } finally {
