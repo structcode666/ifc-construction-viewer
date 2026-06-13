@@ -30,6 +30,7 @@ const PDF_CAPTURE_TIMEOUT_MS = 20000;
 const PDF_CROP_TIMEOUT_MS = 15000;
 const FRAGMENT_STYLE_CHUNK_SIZE = 1000;
 const FRAGMENT_STYLE_MIN_CHUNK_SIZE = 25;
+const PDF_CONTEXT_POSITION_BATCH_SIZE = 2000;
 const PDF_EXPORT_USE_OPACITY = false;
 const PDF_CONTEXT_ITEM_LIMIT = 8000;
 const PDF_TOTAL_ITEM_LIMIT_FOR_FULL_CONTEXT = 15000;
@@ -1714,6 +1715,142 @@ function limitModelIdMapItems(modelIdMap, maxItems) {
   return limited;
 }
 
+function addLocalIdToModelIdMap(modelIdMap, modelId, localId) {
+  if (!modelIdMap[modelId]) {
+    modelIdMap[modelId] = new Set();
+  }
+
+  modelIdMap[modelId].add(localId);
+}
+
+function hasLocalIdInModelIdMap(modelIdMap, modelId, localId) {
+  return modelIdMap[modelId]?.has(localId) ?? false;
+}
+
+async function limitModelIdMapItemsForCurrentView(
+  modelIdMap,
+  maxItems,
+  { context = null, stage = null } = {}
+) {
+  if (maxItems <= 0 || isModelIdMapEmpty(modelIdMap)) {
+    return {};
+  }
+
+  const camera = world.camera.three;
+  const viewCandidates = [];
+  const fallbackItems = limitModelIdMapItems(modelIdMap, maxItems);
+
+  camera.updateMatrixWorld(true);
+  camera.updateProjectionMatrix?.();
+
+  for (const [modelId, localIds] of Object.entries(modelIdMap ?? {})) {
+    const model = fragments.list.get(modelId);
+    const ids = [...(localIds ?? [])];
+
+    if (!model || ids.length === 0) continue;
+
+    for (
+      let index = 0;
+      index < ids.length;
+      index += PDF_CONTEXT_POSITION_BATCH_SIZE
+    ) {
+      const chunk = ids.slice(index, index + PDF_CONTEXT_POSITION_BATCH_SIZE);
+
+      try {
+        const positions = await model.getPositions(chunk);
+
+        for (let positionIndex = 0; positionIndex < chunk.length; positionIndex++) {
+          const position = positions[positionIndex];
+
+          if (!position) continue;
+
+          const projected = position.clone().project(camera);
+          const offscreenX = Math.max(0, Math.abs(projected.x) - 1);
+          const offscreenY = Math.max(0, Math.abs(projected.y) - 1);
+          const depthPenalty =
+            projected.z < -1 || projected.z > 1 ? Math.abs(projected.z) + 2 : 0;
+          const score =
+            offscreenX * 4 +
+            offscreenY * 4 +
+            depthPenalty +
+            Math.abs(projected.x) * 0.1 +
+            Math.abs(projected.y) * 0.1;
+
+          if (score > 2) continue;
+
+          viewCandidates.push({
+            modelId,
+            localId: chunk[positionIndex],
+            score,
+          });
+        }
+      } catch (error) {
+        logPdfExportBreadcrumb(
+          context,
+          "Could not score grey context items against the export camera. Falling back to ID order for this chunk.",
+          {
+            stageId: stage?.id,
+            stageName: stage?.name,
+            modelId,
+            chunkStart: index,
+            chunkSize: chunk.length,
+            error: getErrorDetails(error),
+          },
+          "warn"
+        );
+
+        for (const localId of chunk) {
+          if (!hasLocalIdInModelIdMap(fallbackItems, modelId, localId)) {
+            continue;
+          }
+
+          viewCandidates.push({
+            modelId,
+            localId,
+            score: Number.POSITIVE_INFINITY,
+          });
+        }
+      }
+    }
+  }
+
+  viewCandidates.sort((a, b) => a.score - b.score);
+
+  const limited = {};
+  let selectedCount = 0;
+
+  for (const candidate of viewCandidates) {
+    if (selectedCount >= maxItems) break;
+    if (hasLocalIdInModelIdMap(limited, candidate.modelId, candidate.localId)) {
+      continue;
+    }
+
+    addLocalIdToModelIdMap(limited, candidate.modelId, candidate.localId);
+    selectedCount += 1;
+  }
+
+  if (selectedCount < maxItems) {
+    for (const [modelId, localIds] of Object.entries(fallbackItems)) {
+      for (const localId of localIds) {
+        if (selectedCount >= maxItems) break;
+        if (hasLocalIdInModelIdMap(limited, modelId, localId)) continue;
+
+        addLocalIdToModelIdMap(limited, modelId, localId);
+        selectedCount += 1;
+      }
+    }
+  }
+
+  logPdfExportBreadcrumb(context, "Selected camera-prioritized grey context.", {
+    stageId: stage?.id,
+    stageName: stage?.name,
+    contextLimit: maxItems,
+    selectedContextSummary: summarizeModelIdMap(limited),
+  });
+
+  return limited;
+}
+
 async function setColorForItems(
   items,
   colorHex,
@@ -1780,7 +1917,11 @@ async function applyPdfExportBucketStyles({
 
   const contextItemsForExport = useFullContext
     ? remainderItems
-    : limitModelIdMapItems(remainderItems, PDF_CONTEXT_ITEM_LIMIT);
+    : await limitModelIdMapItemsForCurrentView(
+        remainderItems,
+        PDF_CONTEXT_ITEM_LIMIT,
+        { context, stage }
+      );
 
   if (!useFullContext) {
     logPdfExportBreadcrumb(
