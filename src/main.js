@@ -2582,9 +2582,9 @@ async function prepareViewerForPdfExport(
   // Update lift labels after camera is in the export position.
   await updateLiftLabelsForCurrentView();
 
-  // Apply fragment colours after camera/background/labels are ready. This path
-  // intentionally avoids PDF opacity and caps large grey context buckets to
-  // reduce the chance of Fragments memory overflow.
+  // Apply fragment colours after camera/background/labels are ready.
+  // Small models keep grey context with opacity; large models hide context
+  // and only colour previous/current stage work.
   await applyPdfExportVisualState(stage, preparedBuckets, context);
 
   await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
@@ -2639,7 +2639,15 @@ async function exportCurrentStagePdf(stage) {
   try {
     logPdfExportBreadcrumb(exportContext, "Started single-stage PDF export.");
 
-    await prepareViewerForPdfExport(stage, null, exportContext);
+    const preparedBuckets = await buildPdfExportBuckets(stage.id);
+
+    logPdfExportBreadcrumb(exportContext, "Prepared single-stage export data.", {
+      stageId: stage.id,
+      stageName: stage.name,
+      bucketCounts: preparedBuckets.bucketCounts,
+    });
+
+    await prepareViewerForPdfExport(stage, preparedBuckets, exportContext);
 
     const stageSheetData = await captureStageSheetData(stage, "DRAFT-001");
 
