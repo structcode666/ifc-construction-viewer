@@ -2132,12 +2132,14 @@ async function renderPdfExportOverrideMaterialFrame({
   try {
     await hider.set(true);
     await fragmentsManager.core.update(true);
+    await waitForAnimationFrames(1);
 
     threeScene.overrideMaterial = PDF_EXPORT_GREY_CONTEXT_MATERIAL;
     renderer.autoClear = true;
     renderer.render(threeScene, camera);
 
     threeScene.overrideMaterial = null;
+    renderer.autoClear = false;
 
     if (
       visualState?.highlightItems &&
@@ -2145,8 +2147,8 @@ async function renderPdfExportOverrideMaterialFrame({
     ) {
       await hider.isolate(visualState.highlightItems);
       await fragmentsManager.core.update(true);
+      await waitForAnimationFrames(1);
 
-      renderer.autoClear = false;
       renderer.render(threeScene, camera);
     }
 
@@ -2165,16 +2167,6 @@ async function renderPdfExportOverrideMaterialFrame({
   } finally {
     renderer.autoClear = previousAutoClear;
     threeScene.overrideMaterial = previousOverrideMaterial;
-
-    try {
-      await hider.set(true);
-      await fragmentsManager.core.update(true);
-    } catch (restoreError) {
-      console.warn(
-        "Failed to restore visibility after PDF render pass.",
-        restoreError
-      );
-    }
   }
 }
 
