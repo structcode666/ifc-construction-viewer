@@ -32,6 +32,7 @@ const FRAGMENT_STYLE_CHUNK_SIZE = 1000;
 const FRAGMENT_STYLE_MIN_CHUNK_SIZE = 25;
 const PDF_EXPORT_USE_OPACITY = true;
 const PDF_EXPORT_CONTEXT_OPACITY = 0.18;
+const PDF_EXPORT_OPACITY_ITEM_LIMIT = 8000;
 const PDF_TOTAL_ITEM_LIMIT_FOR_FULL_CONTEXT = 15000;
 const PDF_EXPORT_COLORS = {
   context: "#d0d0d0",
@@ -869,6 +870,52 @@ async function resetAllOpacity() {
   }
 
   await fragments.core.update(true);
+}
+
+async function resetPdfExportFragmentStyles(context = null, reason = "unknown") {
+  logPdfExportBreadcrumb(context, "Resetting PDF export fragment styles.", {
+    reason,
+    loadedModelIds: [...fragments.list.keys()],
+  });
+
+  await fragments.resetHighlight();
+
+  for (const [modelId, model] of fragments.list) {
+    try {
+      await model.resetColor();
+    } catch (error) {
+      logPdfExportBreadcrumb(
+        context,
+        "PDF export colour reset failed.",
+        { reason, modelId, error: getErrorDetails(error) },
+        "error"
+      );
+      throw error;
+    }
+
+    try {
+      await model.resetOpacity();
+    } catch (error) {
+      if (!isFragmentsMemoryOverflow(error)) {
+        logPdfExportBreadcrumb(
+          context,
+          "PDF export opacity reset failed.",
+          { reason, modelId, error: getErrorDetails(error) },
+          "error"
+        );
+        throw error;
+      }
+
+      logPdfExportBreadcrumb(
+        context,
+        "PDF export opacity reset exceeded the fragments memory budget. Continuing because colour styling can still be reset.",
+        { reason, modelId, error: getErrorDetails(error) },
+        "warn"
+      );
+    }
+  }
+
+  await waitForStableExportFrame({ frames: 2 });
 }
 
 async function waitForFragmentsReady() {
@@ -1789,6 +1836,30 @@ async function applyPdfExportBucketStyles({
         bucketName: "context/remainder/full",
       }
     );
+  };
+
+  const applyContextOpacity = async () => {
+    const contextItemCount = countItemsInModelIdMap(remainderItems);
+
+    if (!PDF_EXPORT_USE_OPACITY) {
+      return;
+    }
+
+    if (contextItemCount > PDF_EXPORT_OPACITY_ITEM_LIMIT) {
+      contextOpacityApplied = true;
+      logPdfExportBreadcrumb(
+        context,
+        "Skipped grey context opacity because the context bucket is above the PDF opacity item limit.",
+        {
+          stageId: stage?.id,
+          stageName: stage?.name,
+          contextItemCount,
+          opacityItemLimit: PDF_EXPORT_OPACITY_ITEM_LIMIT,
+        },
+        "warn"
+      );
+      return;
+    }
 
     contextOpacityApplied = await setOpacityForItems(
       remainderItems,
@@ -1832,6 +1903,7 @@ async function applyPdfExportBucketStyles({
     await applyContext();
     await applyPrevious();
     await applyCurrent();
+    await applyContextOpacity();
   } else {
     await applyPrevious();
     await applyCurrent();
@@ -1896,12 +1968,7 @@ async function applyPdfExportVisualState(
   });
 
   await hider.set(true);
-  await fragments.resetHighlight();
-
-  for (const [, model] of fragments.list) {
-    await model.resetColor();
-    await model.resetOpacity();
-  }
+  await resetPdfExportFragmentStyles(context, "before PDF export styling");
 
   await applyPdfExportBucketStyles({
     context,
@@ -2447,44 +2514,7 @@ async function restoreViewerAfterPdfExport(previousState, context = null) {
     previousState.rendererClearAlpha
   );
 
-  await fragments.resetHighlight();
-
-  for (const [modelId, model] of fragments.list) {
-    try {
-      await model.resetColor();
-    } catch (error) {
-      logPdfExportBreadcrumb(
-        context,
-        "Viewer restore colour reset failed.",
-        { modelId, error: getErrorDetails(error) },
-        "error"
-      );
-      throw error;
-    }
-
-    try {
-      await model.resetOpacity();
-    } catch (error) {
-      if (!isFragmentsMemoryOverflow(error)) {
-        logPdfExportBreadcrumb(
-          context,
-          "Viewer restore opacity reset failed.",
-          { modelId, error: getErrorDetails(error) },
-          "error"
-        );
-        throw error;
-      }
-
-      logPdfExportBreadcrumb(
-        context,
-        "Viewer restore opacity reset exceeded the fragments memory budget. Continuing without opacity reset.",
-        { modelId, error: getErrorDetails(error) },
-        "warn"
-      );
-    }
-  }
-
-  await fragments.core.update(true);
+  await resetPdfExportFragmentStyles(context, "after PDF export");
 
   mode = previousState.mode;
   showLiftLabels = previousState.showLiftLabels;
