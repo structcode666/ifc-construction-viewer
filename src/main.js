@@ -31,12 +31,12 @@ const PDF_CAPTURE_TIMEOUT_MS = 20000;
 const PDF_CROP_TIMEOUT_MS = 15000;
 const FRAGMENT_STYLE_CHUNK_SIZE = 1000;
 const FRAGMENT_STYLE_MIN_CHUNK_SIZE = 25;
-const PDF_EXPORT_USE_OPACITY = true;
+const PDF_EXPORT_USE_OPACITY = false;
 const PDF_EXPORT_CONTEXT_OPACITY = 0.18;
 const PDF_EXPORT_OPACITY_ITEM_LIMIT = 8000;
 const PDF_TOTAL_ITEM_LIMIT_FOR_FULL_CONTEXT = 15000;
 const PDF_EXPORT_COLORS = {
-  context: "#d0d0d0",
+  context: "#eeeeee",
   previous: "#00b050",
   current: "#ff0000",
 };
@@ -873,26 +873,37 @@ async function resetAllOpacity() {
   await fragments.core.update(true);
 }
 
-async function resetPdfExportFragmentStyles(context = null, reason = "unknown") {
-  let hider = null;
+async function resetPdfExportFragmentStyles(
+  context = null,
+  reason = "unknown",
+  {
+    componentsManager = components,
+    fragmentsManager = fragments,
+    worldOverride = world,
+    hider: hiderOverride = null,
+  } = {}
+) {
+  let hider = hiderOverride;
 
-  try {
-    hider = components?.get?.(OBC.Hider) ?? null;
-  } catch (error) {
-    logPdfExportBreadcrumb(
-      context,
-      "Could not get Hider for soft fragment reset. Continuing without visibility reset.",
-      { reason, error: getErrorDetails(error) },
-      "warn"
-    );
+  if (!hider) {
+    try {
+      hider = componentsManager?.get?.(OBC.Hider) ?? null;
+    } catch (error) {
+      logPdfExportBreadcrumb(
+        context,
+        "Could not get Hider for soft fragment reset. Continuing without visibility reset.",
+        { reason, error: getErrorDetails(error) },
+        "warn"
+      );
+    }
   }
 
   const result = await softResetFragmentVisualState({
-    fragments,
+    fragments: fragmentsManager,
     hider,
     highlighter: null,
-    world,
-    renderer: world?.renderer,
+    world: worldOverride,
+    renderer: worldOverride?.renderer,
     reason,
   });
 
@@ -908,13 +919,13 @@ async function resetPdfExportFragmentStyles(context = null, reason = "unknown") 
   return result;
 }
 
-async function waitForFragmentsReady() {
-  await fragments.core.update(true);
+async function waitForFragmentsReady(fragmentsManager = fragments) {
+  await fragmentsManager.core.update(true);
 
   await new Promise((resolve) => requestAnimationFrame(resolve));
   await new Promise((resolve) => requestAnimationFrame(resolve));
 
-  await fragments.core.update(true);
+  await fragmentsManager.core.update(true);
 }
 
 async function waitForAnimationFrames(count = 1) {
@@ -938,16 +949,23 @@ async function waitForAnimationFrames(count = 1) {
  * visually settle. This helper gives the renderer and DOM a final stable frame
  * before html-to-image captures the viewer.
  */
-async function waitForStableExportFrame({ frames = 6 } = {}) {
-  await fragments.core.update(true);
+async function waitForStableExportFrame({
+  frames = 6,
+  fragmentsManager = fragments,
+  worldOverride = world,
+} = {}) {
+  await fragmentsManager.core.update(true);
 
   for (let i = 0; i < frames; i++) {
     await new Promise((resolve) => requestAnimationFrame(resolve));
-    await fragments.core.update(true);
+    await fragmentsManager.core.update(true);
   }
 
   try {
-    world.renderer.three.render(world.scene.three, world.camera.three);
+    worldOverride.renderer.three.render(
+      worldOverride.scene.three,
+      worldOverride.camera.three
+    );
   } catch (error) {
     console.warn("Manual export render failed. Continuing anyway.", error);
   }
@@ -1070,10 +1088,10 @@ function logPdfExportBreadcrumb(context, message, details = {}, level = "log") {
   });
 }
 
-async function getAllGeometryItems() {
+async function getAllGeometryItems(fragmentsManager = fragments) {
   const allItems = {};
 
-  for (const [modelId, model] of fragments.list) {
+  for (const [modelId, model] of fragmentsManager.list) {
     const ids = await model.getItemsIdsWithGeometry();
     allItems[modelId] = new Set(ids);
   }
@@ -1185,16 +1203,28 @@ async function getGeometryIdsForItem({
   return result;
 }
 
-async function resolveSelectionToGeometryItems(selection, allGeometryItems) {
+async function resolveSelectionToGeometryItems(
+  selection,
+  allGeometryItems,
+  fragmentsManager = fragments
+) {
   const resolved = {};
   const unresolved = {};
+  const fallbackModelId =
+    Object.keys(allGeometryItems ?? {}).length === 1
+      ? Object.keys(allGeometryItems)[0]
+      : null;
 
   for (const [modelId, localIds] of Object.entries(selection ?? {})) {
-    const model = fragments.list.get(modelId);
-    const geometryIds = allGeometryItems[modelId];
+    const targetModelId =
+      fragmentsManager.list.has(modelId) || !fallbackModelId
+        ? modelId
+        : fallbackModelId;
+    const model = fragmentsManager.list.get(targetModelId);
+    const geometryIds = allGeometryItems[targetModelId];
 
     if (!model || !geometryIds) {
-      unresolved[modelId] = [...localIds];
+      unresolved[targetModelId] = [...localIds];
       continue;
     }
 
@@ -1206,20 +1236,20 @@ async function resolveSelectionToGeometryItems(selection, allGeometryItems) {
       });
 
       if (resolvedIds.size === 0) {
-        if (!unresolved[modelId]) {
-          unresolved[modelId] = [];
+        if (!unresolved[targetModelId]) {
+          unresolved[targetModelId] = [];
         }
 
-        unresolved[modelId].push(localId);
+        unresolved[targetModelId].push(localId);
         continue;
       }
 
-      if (!resolved[modelId]) {
-        resolved[modelId] = new Set();
+      if (!resolved[targetModelId]) {
+        resolved[targetModelId] = new Set();
       }
 
       for (const resolvedId of resolvedIds) {
-        resolved[modelId].add(resolvedId);
+        resolved[targetModelId].add(resolvedId);
       }
     }
   }
@@ -1256,6 +1286,7 @@ async function applyFragmentStyleInChunks({
   items,
   operationName,
   applyChunk,
+  fragmentsManager = fragments,
   context = null,
   stage = null,
   bucketName = "unknown",
@@ -1272,7 +1303,7 @@ async function applyFragmentStyleInChunks({
   });
 
   for (const [modelId, localIds] of Object.entries(items ?? {})) {
-    const model = fragments.list.get(modelId);
+    const model = fragmentsManager.list.get(modelId);
 
     if (!model) {
       logPdfExportBreadcrumb(
@@ -1331,7 +1362,7 @@ async function applyFragmentStyleInChunks({
   }
 
   if (update) {
-    await fragments.core.update(true);
+    await fragmentsManager.core.update(true);
   }
 
   return applied;
@@ -1448,6 +1479,7 @@ async function setOpacityForItems(
     context = null,
     stage = null,
     bucketName = "unknown",
+    fragmentsManager = fragments,
   } = {}
 ) {
   if (context?.opacityDisabled) {
@@ -1473,6 +1505,7 @@ async function setOpacityForItems(
     applyChunk: async ({ model, chunk }) => {
       await model.setOpacity(chunk, opacity);
     },
+    fragmentsManager,
     context,
     stage,
     bucketName,
@@ -1650,8 +1683,8 @@ function createPdfExportBuckets({
   };
 }
 
-async function buildPdfExportBuckets(stageId) {
-  const allGeometryItems = await getAllGeometryItems();
+async function buildPdfExportBuckets(stageId, fragmentsManager = fragments) {
+  const allGeometryItems = await getAllGeometryItems(fragmentsManager);
 
   const rawCurrentItems = staging.getStageSelection(stageId);
   const rawPreviousItems = getPreviousStageItems(stageId);
@@ -1659,12 +1692,20 @@ async function buildPdfExportBuckets(stageId) {
   const {
     resolved: currentGeometryItems,
     unresolved: unresolvedCurrentItems,
-  } = await resolveSelectionToGeometryItems(rawCurrentItems, allGeometryItems);
+  } = await resolveSelectionToGeometryItems(
+    rawCurrentItems,
+    allGeometryItems,
+    fragmentsManager
+  );
 
   const {
     resolved: previousGeometryItems,
     unresolved: unresolvedPreviousItems,
-  } = await resolveSelectionToGeometryItems(rawPreviousItems, allGeometryItems);
+  } = await resolveSelectionToGeometryItems(
+    rawPreviousItems,
+    allGeometryItems,
+    fragmentsManager
+  );
 
   return createPdfExportBuckets({
     stageId,
@@ -1678,15 +1719,16 @@ async function buildPdfExportBuckets(stageId) {
   });
 }
 
-async function buildPdfExportPlan(stages) {
-  const allGeometryItems = await getAllGeometryItems();
+async function buildPdfExportPlan(stages, fragmentsManager = fragments) {
+  const allGeometryItems = await getAllGeometryItems(fragmentsManager);
   const resolvedStageItems = new Map();
   const unresolvedStageItems = new Map();
 
   for (const stage of stages) {
     const { resolved, unresolved } = await resolveSelectionToGeometryItems(
       stage.items,
-      allGeometryItems
+      allGeometryItems,
+      fragmentsManager
     );
 
     resolvedStageItems.set(stage.id, resolved);
@@ -1740,6 +1782,7 @@ async function setColorForItems(
     context = null,
     stage = null,
     bucketName = "unknown",
+    fragmentsManager = fragments,
   } = {}
 ) {
   const color = new THREE.Color(colorHex);
@@ -1750,6 +1793,7 @@ async function setColorForItems(
     applyChunk: async ({ model, chunk }) => {
       await model.setColor(chunk, color);
     },
+    fragmentsManager,
     context,
     stage,
     bucketName,
@@ -1792,8 +1836,12 @@ async function applyPdfExportBucketStyles({
   previousOnlyItems,
   remainderItems,
   bucketCounts,
+  fragmentsManager = fragments,
+  hider = components.get(OBC.Hider),
+  forceFullContext = false,
 }) {
   const useFullContext =
+    forceFullContext ||
     bucketCounts.allGeometry <= PDF_TOTAL_ITEM_LIMIT_FOR_FULL_CONTEXT;
 
   if (!useFullContext) {
@@ -1824,6 +1872,7 @@ async function applyPdfExportBucketStyles({
         context,
         stage,
         bucketName: "context/remainder/full",
+        fragmentsManager,
       }
     );
   };
@@ -1859,6 +1908,7 @@ async function applyPdfExportBucketStyles({
         context,
         stage,
         bucketName: "context/remainder/full",
+        fragmentsManager,
       }
     );
   };
@@ -1872,6 +1922,7 @@ async function applyPdfExportBucketStyles({
         context,
         stage,
         bucketName: "previous",
+        fragmentsManager,
       }
     );
   };
@@ -1885,6 +1936,7 @@ async function applyPdfExportBucketStyles({
         context,
         stage,
         bucketName: "current",
+        fragmentsManager,
       }
     );
   };
@@ -1898,7 +1950,6 @@ async function applyPdfExportBucketStyles({
     await applyPrevious();
     await applyCurrent();
 
-    const hider = components.get(OBC.Hider);
     await hider.set(false, remainderItems);
     contextApplied = true;
     contextOpacityApplied = true;
@@ -1930,15 +1981,21 @@ async function applyPdfExportBucketStyles({
     },
   });
 
-  await fragments.core.update(true);
+  await fragmentsManager.core.update(true);
 }
 
 async function applyPdfExportVisualState(
   stage,
   preparedBuckets = null,
-  context = null
+  context = null,
+  {
+    componentsManager = components,
+    fragmentsManager = fragments,
+    worldOverride = world,
+    hider = components.get(OBC.Hider),
+    forceFullContext = false,
+  } = {}
 ) {
-  const hider = components.get(OBC.Hider);
   const stageId = stage.id;
 
   const {
@@ -1946,7 +2003,7 @@ async function applyPdfExportVisualState(
     previousOnlyItems,
     remainderItems,
     bucketCounts,
-  } = preparedBuckets ?? (await buildPdfExportBuckets(stageId));
+  } = preparedBuckets ?? (await buildPdfExportBuckets(stageId, fragmentsManager));
 
   logPdfExportBreadcrumb(context, "Applying PDF export visual state.", {
     stageId,
@@ -1954,11 +2011,17 @@ async function applyPdfExportVisualState(
     bucketCounts,
     useOpacity:
       PDF_EXPORT_USE_OPACITY &&
-      bucketCounts.allGeometry <= PDF_TOTAL_ITEM_LIMIT_FOR_FULL_CONTEXT,
+      (forceFullContext ||
+        bucketCounts.allGeometry <= PDF_TOTAL_ITEM_LIMIT_FOR_FULL_CONTEXT),
   });
 
   await hider.set(true);
-  await resetPdfExportFragmentStyles(context, "before PDF export styling");
+  await resetPdfExportFragmentStyles(context, "before PDF export styling", {
+    componentsManager,
+    fragmentsManager,
+    worldOverride,
+    hider,
+  });
 
   await applyPdfExportBucketStyles({
     context,
@@ -1967,9 +2030,16 @@ async function applyPdfExportVisualState(
     previousOnlyItems,
     remainderItems,
     bucketCounts,
+    fragmentsManager,
+    hider,
+    forceFullContext,
   });
 
-  await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
+  await waitForStableExportFrame({
+    frames: PDF_EXPORT_SETTLE_FRAMES,
+    fragmentsManager,
+    worldOverride,
+  });
 
   logPdfExportBreadcrumb(context, "Applied PDF export visual state.", {
     stageId,
@@ -2490,6 +2560,190 @@ function captureCurrentViewerStateForExportRestore() {
   };
 }
 
+function createPdfExportViewerDom() {
+  const sourceRect = ui.viewerArea.getBoundingClientRect();
+  const width = Math.max(900, Math.round(sourceRect.width || 1200));
+  const height = Math.max(600, Math.round(sourceRect.height || 800));
+
+  const viewerArea = document.createElement("main");
+  viewerArea.className = "viewer-area is-exporting pdf-export-viewer-area";
+  viewerArea.style.position = "fixed";
+  viewerArea.style.left = "-10000px";
+  viewerArea.style.top = "0";
+  viewerArea.style.width = `${width}px`;
+  viewerArea.style.height = `${height}px`;
+  viewerArea.style.background = "#ffffff";
+  viewerArea.style.pointerEvents = "none";
+  viewerArea.style.overflow = "hidden";
+
+  const viewerContainer = document.createElement("div");
+  viewerContainer.style.position = "relative";
+  viewerContainer.style.width = "100%";
+  viewerContainer.style.height = "100%";
+  viewerContainer.style.background = "#ffffff";
+  viewerContainer.style.touchAction = "none";
+
+  viewerArea.appendChild(viewerContainer);
+  document.body.appendChild(viewerArea);
+
+  return {
+    viewerArea,
+    viewerContainer,
+    width,
+    height,
+  };
+}
+
+async function createPdfExportViewerSession(context = null) {
+  if (!currentIfcFile) {
+    throw new Error("No IFC file is loaded for PDF export.");
+  }
+
+  const dom = createPdfExportViewerDom();
+
+  logPdfExportBreadcrumb(context, "Creating export-only PDF viewer.", {
+    width: dom.width,
+    height: dom.height,
+    ifcFileName: currentIfcFile.name,
+  });
+
+  const setup = await setupWorld(dom.viewerContainer);
+  const exportViewpoints = setup.components.get(OBC.Viewpoints);
+  exportViewpoints.world = setup.world;
+
+  await loadIfcFromFile(setup.components, currentIfcFile);
+  await waitForFragmentsReady(setup.fragments);
+
+  setup.world.scene.three.background = new THREE.Color("#ffffff");
+  setup.world.renderer.three.setClearColor("#ffffff", 1);
+
+  const hider = setup.components.get(OBC.Hider);
+  const liftLabelsManager = createLiftLabelManager({
+    components: setup.components,
+    world: setup.world,
+    fragments: setup.fragments,
+    onLabelPositionChanged: null,
+  });
+
+  await resetPdfExportFragmentStyles(context, "after export viewer load", {
+    componentsManager: setup.components,
+    fragmentsManager: setup.fragments,
+    worldOverride: setup.world,
+    hider,
+  });
+
+  return {
+    ...setup,
+    viewpoints: exportViewpoints,
+    hider,
+    liftLabels: liftLabelsManager,
+    viewerArea: dom.viewerArea,
+    viewerContainer: dom.viewerContainer,
+  };
+}
+
+async function disposePdfExportViewerSession(session, context = null) {
+  if (!session) return;
+
+  logPdfExportBreadcrumb(context, "Disposing export-only PDF viewer.");
+
+  try {
+    session.liftLabels?.clear?.();
+  } catch (error) {
+    logPdfExportBreadcrumb(
+      context,
+      "Export viewer lift label cleanup failed.",
+      { error: getErrorDetails(error) },
+      "warn"
+    );
+  }
+
+  try {
+    session.components?.dispose?.();
+  } catch (error) {
+    logPdfExportBreadcrumb(
+      context,
+      "Export viewer component disposal failed.",
+      { error: getErrorDetails(error) },
+      "warn"
+    );
+  }
+
+  if (session.workerUrl) {
+    URL.revokeObjectURL(session.workerUrl);
+  }
+
+  session.viewerArea?.remove?.();
+
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+}
+
+async function restoreSavedViewForStageInExportViewer(session, stageId) {
+  const savedViewData = staging.getStageView(stageId);
+
+  if (!savedViewData) {
+    return false;
+  }
+
+  const viewpoint = session.viewpoints.create();
+  viewpoint.title = "Export Only Viewpoint";
+  viewpoint.set(savedViewData);
+
+  await viewpoint.go({
+    transition: false,
+    applyVisibility: false,
+    applyClippings: false,
+  });
+
+  await waitForFragmentsReady(session.fragments);
+  await waitForAnimationFrames(2);
+
+  return true;
+}
+
+async function prepareExportOnlyViewerForPdfStage(
+  session,
+  stage,
+  preparedBuckets,
+  context = null
+) {
+  logPdfExportBreadcrumb(context, "Preparing export-only viewer for stage.", {
+    stageId: stage.id,
+    stageName: stage.name,
+    bucketCounts: preparedBuckets?.bucketCounts,
+  });
+
+  const usedSavedView = await restoreSavedViewForStageInExportViewer(
+    session,
+    stage.id
+  );
+
+  if (!usedSavedView) {
+    logPdfExportBreadcrumb(
+      context,
+      "No saved view found for export-only viewer stage. Using current export camera.",
+      { stageId: stage.id, stageName: stage.name },
+      "warn"
+    );
+  }
+
+  await session.liftLabels.showLiftLabelsForStages([stage]);
+
+  await applyPdfExportVisualState(stage, preparedBuckets, context, {
+    componentsManager: session.components,
+    fragmentsManager: session.fragments,
+    worldOverride: session.world,
+    hider: session.hider,
+    forceFullContext: true,
+  });
+
+  await waitForStableExportFrame({
+    frames: PDF_EXPORT_SETTLE_FRAMES,
+    fragmentsManager: session.fragments,
+    worldOverride: session.world,
+  });
+}
+
 async function restoreViewerAfterPdfExport(previousState, context = null) {
   logPdfExportBreadcrumb(context, "Restoring viewer after PDF export.", {
     previousMode: previousState.mode,
@@ -2610,11 +2864,23 @@ async function prepareViewerForPdfExport(
   await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
 }
 
-async function captureStageSheetData(stage, drawingNumber = "DRAFT-001") {
-  await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
+async function captureStageSheetData(
+  stage,
+  drawingNumber = "DRAFT-001",
+  captureElement = ui.viewerArea,
+  {
+    fragmentsManager = fragments,
+    worldOverride = world,
+  } = {}
+) {
+  await waitForStableExportFrame({
+    frames: PDF_EXPORT_SETTLE_FRAMES,
+    fragmentsManager,
+    worldOverride,
+  });
 
   const rawImageDataUrl = await withTimeout(
-    toPng(ui.viewerArea, {
+    toPng(captureElement, {
       cacheBust: true,
       fontEmbedCSS: "",
       pixelRatio: PDF_EXPORT_PIXEL_RATIO,
@@ -2655,11 +2921,16 @@ async function exportCurrentStagePdf(stage) {
 
   const previousState = captureCurrentViewerStateForExportRestore();
   const exportContext = createPdfExportContext("single-stage", [stage]);
+  let exportSession = null;
 
   try {
     logPdfExportBreadcrumb(exportContext, "Started single-stage PDF export.");
 
-    const preparedBuckets = await buildPdfExportBuckets(stage.id);
+    exportSession = await createPdfExportViewerSession(exportContext);
+    const preparedBuckets = await buildPdfExportBuckets(
+      stage.id,
+      exportSession.fragments
+    );
 
     logPdfExportBreadcrumb(exportContext, "Prepared single-stage export data.", {
       stageId: stage.id,
@@ -2670,12 +2941,31 @@ async function exportCurrentStagePdf(stage) {
     let stageSheetData = null;
 
     try {
-      await prepareViewerForPdfExport(stage, preparedBuckets, exportContext);
-      stageSheetData = await captureStageSheetData(stage, "DRAFT-001");
+      await prepareExportOnlyViewerForPdfStage(
+        exportSession,
+        stage,
+        preparedBuckets,
+        exportContext
+      );
+      stageSheetData = await captureStageSheetData(
+        stage,
+        "DRAFT-001",
+        exportSession.viewerArea,
+        {
+          fragmentsManager: exportSession.fragments,
+          worldOverride: exportSession.world,
+        }
+      );
     } finally {
       await resetPdfExportFragmentStyles(
         exportContext,
-        "after single-stage PDF capture"
+        "after single-stage PDF capture",
+        {
+          componentsManager: exportSession.components,
+          fragmentsManager: exportSession.fragments,
+          worldOverride: exportSession.world,
+          hider: exportSession.hider,
+        }
       );
     }
 
@@ -2693,6 +2983,7 @@ async function exportCurrentStagePdf(stage) {
     setStatus("PDF export failed.");
   } finally {
     try {
+      await disposePdfExportViewerSession(exportSession, exportContext);
       await restoreViewerAfterPdfExport(previousState, exportContext);
     } catch (restoreError) {
       logPdfExportBreadcrumb(
@@ -2731,6 +3022,7 @@ async function exportAllStagesPdf() {
   const stageSheets = [];
   const failedStages = [];
   let exportContext = null;
+  let exportSession = null;
 
   try {
     const stages = staging
@@ -2744,7 +3036,11 @@ async function exportAllStagesPdf() {
       stageCount: stages.length,
     });
 
-    const exportPlan = await buildPdfExportPlan(stages);
+    exportSession = await createPdfExportViewerSession(exportContext);
+    const exportPlan = await buildPdfExportPlan(
+      stages,
+      exportSession.fragments
+    );
 
     for (let index = 0; index < stages.length; index++) {
       const fullStage = stages[index];
@@ -2762,7 +3058,8 @@ async function exportAllStagesPdf() {
           bucketCounts: preparedBuckets?.bucketCounts,
         });
 
-        await prepareViewerForPdfExport(
+        await prepareExportOnlyViewerForPdfStage(
+          exportSession,
           fullStage,
           preparedBuckets,
           exportContext
@@ -2770,7 +3067,12 @@ async function exportAllStagesPdf() {
 
         const stageSheetData = await captureStageSheetData(
           fullStage,
-          `DRAFT-${String(index + 1).padStart(3, "0")}`
+          `DRAFT-${String(index + 1).padStart(3, "0")}`,
+          exportSession.viewerArea,
+          {
+            fragmentsManager: exportSession.fragments,
+            worldOverride: exportSession.world,
+          }
         );
 
         stageSheets.push(stageSheetData);
@@ -2798,7 +3100,13 @@ async function exportAllStagesPdf() {
       } finally {
         await resetPdfExportFragmentStyles(
           exportContext,
-          `after stage PDF capture: ${fullStage.name}`
+          `after stage PDF capture: ${fullStage.name}`,
+          {
+            componentsManager: exportSession.components,
+            fragmentsManager: exportSession.fragments,
+            worldOverride: exportSession.world,
+            hider: exportSession.hider,
+          }
         );
       }
     }
@@ -2832,6 +3140,7 @@ async function exportAllStagesPdf() {
     setStatus("Export all stages failed.");
   } finally {
     try {
+      await disposePdfExportViewerSession(exportSession, exportContext);
       await restoreViewerAfterPdfExport(previousState, exportContext);
     } catch (restoreError) {
       logPdfExportBreadcrumb(

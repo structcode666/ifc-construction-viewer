@@ -1,11 +1,11 @@
 import * as OBC from "@thatopen/components";
 
-let loaderIsSetup = false;
+const setupLoaders = new WeakSet();
 
 export async function loadIfcFromFile(components, file, onProgress) {
   const ifcLoader = components.get(OBC.IfcLoader);
 
-  if (!loaderIsSetup) {
+  if (!setupLoaders.has(ifcLoader)) {
     await ifcLoader.setup({
       autoSetWasm: false,
       wasm: {
@@ -14,7 +14,7 @@ export async function loadIfcFromFile(components, file, onProgress) {
       },
     });
 
-    loaderIsSetup = true;
+    setupLoaders.add(ifcLoader);
   }
 
   const arrayBuffer = await file.arrayBuffer();
