@@ -13,6 +13,7 @@ import {
 import { saveProjectFile, readProjectFile } from "./app/projectStorage.js";
 import { createLiftLabelManager } from "./viewer/liftLabels.js";
 import { initMeasurements } from "./viewer/measurements.js";
+import { softResetFragmentVisualState } from "./viewer/fragmentVisualReset.js";
 
 import { toPng } from "html-to-image";
 import {
@@ -873,49 +874,38 @@ async function resetAllOpacity() {
 }
 
 async function resetPdfExportFragmentStyles(context = null, reason = "unknown") {
-  logPdfExportBreadcrumb(context, "Resetting PDF export fragment styles.", {
-    reason,
-    loadedModelIds: [...fragments.list.keys()],
-  });
+  let hider = null;
 
-  await fragments.resetHighlight();
-
-  for (const [modelId, model] of fragments.list) {
-    try {
-      await model.resetColor();
-    } catch (error) {
-      logPdfExportBreadcrumb(
-        context,
-        "PDF export colour reset failed.",
-        { reason, modelId, error: getErrorDetails(error) },
-        "error"
-      );
-      throw error;
-    }
-
-    try {
-      await model.resetOpacity();
-    } catch (error) {
-      if (!isFragmentsMemoryOverflow(error)) {
-        logPdfExportBreadcrumb(
-          context,
-          "PDF export opacity reset failed.",
-          { reason, modelId, error: getErrorDetails(error) },
-          "error"
-        );
-        throw error;
-      }
-
-      logPdfExportBreadcrumb(
-        context,
-        "PDF export opacity reset exceeded the fragments memory budget. Continuing because colour styling can still be reset.",
-        { reason, modelId, error: getErrorDetails(error) },
-        "warn"
-      );
-    }
+  try {
+    hider = components?.get?.(OBC.Hider) ?? null;
+  } catch (error) {
+    logPdfExportBreadcrumb(
+      context,
+      "Could not get Hider for soft fragment reset. Continuing without visibility reset.",
+      { reason, error: getErrorDetails(error) },
+      "warn"
+    );
   }
 
-  await waitForStableExportFrame({ frames: 2 });
+  const result = await softResetFragmentVisualState({
+    fragments,
+    hider,
+    highlighter: null,
+    world,
+    renderer: world?.renderer,
+    reason,
+  });
+
+  logPdfExportBreadcrumb(
+    context,
+    result.ok
+      ? "Soft reset fragment visual state completed."
+      : "Soft reset fragment visual state completed with warnings.",
+    result,
+    result.ok ? "log" : "warn"
+  );
+
+  return result;
 }
 
 async function waitForFragmentsReady() {
@@ -2677,9 +2667,17 @@ async function exportCurrentStagePdf(stage) {
       bucketCounts: preparedBuckets.bucketCounts,
     });
 
-    await prepareViewerForPdfExport(stage, preparedBuckets, exportContext);
+    let stageSheetData = null;
 
-    const stageSheetData = await captureStageSheetData(stage, "DRAFT-001");
+    try {
+      await prepareViewerForPdfExport(stage, preparedBuckets, exportContext);
+      stageSheetData = await captureStageSheetData(stage, "DRAFT-001");
+    } finally {
+      await resetPdfExportFragmentStyles(
+        exportContext,
+        "after single-stage PDF capture"
+      );
+    }
 
     exportStageImageToPdf(stageSheetData);
 
@@ -2797,6 +2795,11 @@ async function exportAllStagesPdf() {
           "error"
         );
         failedStages.push(fullStage.name);
+      } finally {
+        await resetPdfExportFragmentStyles(
+          exportContext,
+          `after stage PDF capture: ${fullStage.name}`
+        );
       }
     }
 
