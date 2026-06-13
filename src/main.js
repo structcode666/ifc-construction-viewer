@@ -37,7 +37,7 @@ const PDF_EXPORT_RENDER_MODES = {
   fragmentColors: "fragment-colors",
   overrideMaterialExperiment: "override-material-experiment",
 };
-const PDF_EXPORT_GREY_CONTEXT_OPACITY = 0.25;
+const PDF_EXPORT_GREY_CONTEXT_OPACITY = 1.0;
 const PDF_EXPORT_COLORS = {
   context: "#999999",
   previous: "#00b050",
@@ -2112,6 +2112,27 @@ async function createPdfExportOverlayScene({
   };
 }
 
+function renderTextureToScreen(renderer, texture) {
+  const screenScene = new THREE.Scene();
+  const screenCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const screenMaterial = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const screenMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(2, 2),
+    screenMaterial
+  );
+
+  screenScene.add(screenMesh);
+  renderer.render(screenScene, screenCamera);
+
+  screenMesh.geometry.dispose();
+  screenMaterial.dispose();
+}
+
 async function renderPdfExportOverrideMaterialFrame({
   visualState = null,
   fragmentsManager = fragments,
@@ -2128,27 +2149,56 @@ async function renderPdfExportOverrideMaterialFrame({
   const camera = worldOverride.camera.three;
   const previousOverrideMaterial = threeScene.overrideMaterial;
   const previousAutoClear = renderer.autoClear;
+  const previousRenderTarget = renderer.getRenderTarget();
+  const previousClearColor = renderer.getClearColor(new THREE.Color());
+  const previousClearAlpha = renderer.getClearAlpha();
+  const size = renderer.getSize(new THREE.Vector2());
+  const pixelRatio = renderer.getPixelRatio();
+  const hasHighlightItems =
+    visualState?.highlightItems && !isModelIdMapEmpty(visualState.highlightItems);
+  const target = new THREE.WebGLRenderTarget(
+    Math.max(1, Math.floor(size.x * pixelRatio)),
+    Math.max(1, Math.floor(size.y * pixelRatio)),
+    {
+      samples: 4,
+      colorSpace: THREE.SRGBColorSpace,
+    }
+  );
 
   try {
     await hider.set(true);
     await fragmentsManager.core.update(true);
     await waitForAnimationFrames(1);
 
+    // Keep the grey base out of the visible canvas. Fragments visibility
+    // updates for the red/green pass can trigger their own render and clear the
+    // canvas, so the context pass is first captured into a render target.
     threeScene.overrideMaterial = PDF_EXPORT_GREY_CONTEXT_MATERIAL;
+    renderer.setRenderTarget(target);
+    renderer.setClearColor("#ffffff", 0);
     renderer.autoClear = true;
+    renderer.clear();
     renderer.render(threeScene, camera);
 
     threeScene.overrideMaterial = null;
-    renderer.autoClear = false;
+    renderer.setRenderTarget(null);
 
-    if (
-      visualState?.highlightItems &&
-      !isModelIdMapEmpty(visualState.highlightItems)
-    ) {
+    if (hasHighlightItems) {
       await hider.isolate(visualState.highlightItems);
       await fragmentsManager.core.update(true);
       await waitForAnimationFrames(1);
+    }
 
+    // Composite the saved grey context back to the visible canvas, then draw the
+    // isolated real Fragments geometry over it without clearing.
+    renderer.setRenderTarget(null);
+    renderer.setClearColor("#ffffff", 1);
+    renderer.autoClear = true;
+    renderer.clear();
+    renderTextureToScreen(renderer, target.texture);
+
+    renderer.autoClear = false;
+    if (hasHighlightItems) {
       renderer.render(threeScene, camera);
     }
 
@@ -2156,7 +2206,7 @@ async function renderPdfExportOverrideMaterialFrame({
       context,
       "Rendered grey override + fragment highlight PDF frame.",
       {
-        hasHighlightItems: Boolean(visualState?.highlightItems),
+        hasHighlightItems: Boolean(hasHighlightItems),
         highlightItemCount: countItemsInModelIdMap(
           visualState?.highlightItems
         ),
@@ -2167,6 +2217,9 @@ async function renderPdfExportOverrideMaterialFrame({
   } finally {
     renderer.autoClear = previousAutoClear;
     threeScene.overrideMaterial = previousOverrideMaterial;
+    renderer.setRenderTarget(previousRenderTarget);
+    renderer.setClearColor(previousClearColor, previousClearAlpha);
+    target.dispose();
   }
 }
 
