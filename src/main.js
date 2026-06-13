@@ -30,7 +30,8 @@ const PDF_CAPTURE_TIMEOUT_MS = 20000;
 const PDF_CROP_TIMEOUT_MS = 15000;
 const FRAGMENT_STYLE_CHUNK_SIZE = 1000;
 const FRAGMENT_STYLE_MIN_CHUNK_SIZE = 25;
-const PDF_EXPORT_USE_OPACITY = false;
+const PDF_EXPORT_USE_OPACITY = true;
+const PDF_EXPORT_CONTEXT_OPACITY = 0.18;
 const PDF_TOTAL_ITEM_LIMIT_FOR_FULL_CONTEXT = 15000;
 const PDF_EXPORT_COLORS = {
   context: "#d0d0d0",
@@ -1773,6 +1774,7 @@ async function applyPdfExportBucketStyles({
   }
 
   let contextApplied = true;
+  let contextOpacityApplied = true;
   let previousApplied = true;
   let currentApplied = true;
 
@@ -1780,6 +1782,17 @@ async function applyPdfExportBucketStyles({
     contextApplied = await setColorForItems(
       remainderItems,
       PDF_EXPORT_COLORS.context,
+      {
+        update: false,
+        context,
+        stage,
+        bucketName: "context/remainder/full",
+      }
+    );
+
+    contextOpacityApplied = await setOpacityForItems(
+      remainderItems,
+      PDF_EXPORT_CONTEXT_OPACITY,
       {
         update: false,
         context,
@@ -1826,6 +1839,7 @@ async function applyPdfExportBucketStyles({
     const hider = components.get(OBC.Hider);
     await hider.set(false, remainderItems);
     contextApplied = true;
+    contextOpacityApplied = true;
   }
 
   logFailedPdfColorBuckets({
@@ -1833,6 +1847,7 @@ async function applyPdfExportBucketStyles({
     stage,
     bucketResults: {
       context: contextApplied,
+      contextOpacity: contextOpacityApplied,
       previous: previousApplied,
       current: currentApplied,
     },
@@ -1847,6 +1862,7 @@ async function applyPdfExportBucketStyles({
     bucketCounts,
     applied: {
       context: contextApplied,
+      contextOpacity: contextOpacityApplied,
       previous: previousApplied,
       current: currentApplied,
     },
@@ -1874,7 +1890,9 @@ async function applyPdfExportVisualState(
     stageId,
     stageName: stage.name,
     bucketCounts,
-    useOpacity: PDF_EXPORT_USE_OPACITY,
+    useOpacity:
+      PDF_EXPORT_USE_OPACITY &&
+      bucketCounts.allGeometry <= PDF_TOTAL_ITEM_LIMIT_FOR_FULL_CONTEXT,
   });
 
   await hider.set(true);
