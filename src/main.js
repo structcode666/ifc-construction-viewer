@@ -31,13 +31,15 @@ const PDF_CAPTURE_TIMEOUT_MS = 20000;
 const PDF_CROP_TIMEOUT_MS = 15000;
 const FRAGMENT_STYLE_CHUNK_SIZE = 1000;
 const FRAGMENT_STYLE_MIN_CHUNK_SIZE = 25;
+const PDF_EXPORT_CONTEXT_GEOMETRY_CHUNK_SIZE = 100;
 const PDF_EXPORT_USE_OPACITY = false;
-const PDF_EXPORT_CONTEXT_RENDER_MODE = "override-material-experiment";
+const PDF_EXPORT_CONTEXT_RENDER_MODE = "image-layer";
 const PDF_EXPORT_RENDER_MODES = {
   fragmentColors: "fragment-colors",
   overrideMaterialExperiment: "override-material-experiment",
+  imageLayer: "image-layer",
 };
-const PDF_EXPORT_GREY_CONTEXT_OPACITY = 1.0;
+const PDF_EXPORT_GREY_CONTEXT_OPACITY = 0.25;
 const PDF_EXPORT_COLORS = {
   context: "#999999",
   previous: "#00b050",
@@ -1898,27 +1900,11 @@ async function applyPdfExportBucketStyles({
   stage,
   currentGeometryItems,
   previousOnlyItems,
-  remainderItems,
   bucketCounts,
   fragmentsManager = fragments,
 }) {
-  let contextApplied = true;
   let previousApplied = true;
   let currentApplied = true;
-
-  const applyContext = async () => {
-    contextApplied = await setColorForItems(
-      remainderItems,
-      PDF_EXPORT_COLORS.context,
-      {
-        update: false,
-        context,
-        stage,
-        bucketName: "context/remainder/full",
-        fragmentsManager,
-      }
-    );
-  };
 
   const applyPrevious = async () => {
     previousApplied = await setColorForItems(
@@ -1948,7 +1934,9 @@ async function applyPdfExportBucketStyles({
     );
   };
 
-  await applyContext();
+  // Grey context is now produced as an image-processing layer after capturing
+  // the full model. Do not colour or fade future/remainder fragment items here:
+  // large context buckets can overflow Fragments memory.
   await applyPrevious();
   await applyCurrent();
 
@@ -1956,7 +1944,6 @@ async function applyPdfExportBucketStyles({
     context,
     stage,
     bucketResults: {
-      context: contextApplied,
       previous: previousApplied,
       current: currentApplied,
     },
@@ -1969,7 +1956,6 @@ async function applyPdfExportBucketStyles({
     contextMode: "light-grey",
     bucketCounts,
     applied: {
-      context: contextApplied,
       previous: previousApplied,
       current: currentApplied,
     },
@@ -2112,25 +2098,139 @@ async function createPdfExportOverlayScene({
   };
 }
 
-function renderTextureToScreen(renderer, texture) {
-  const screenScene = new THREE.Scene();
-  const screenCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  const screenMaterial = new THREE.MeshBasicMaterial({
-    map: texture,
-    transparent: true,
-    depthTest: false,
-    depthWrite: false,
+function createGeometryFromPdfExportMeshData(meshData) {
+  if (!meshData?.positions || meshData.positions.length === 0) {
+    return null;
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  const positions =
+    meshData.positions instanceof Float32Array
+      ? meshData.positions
+      : new Float32Array(meshData.positions);
+
+  geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+
+  if (meshData.indices && meshData.indices.length > 0) {
+    geometry.setIndex(new THREE.BufferAttribute(meshData.indices, 1));
+  }
+
+  if (meshData.transform?.isMatrix4) {
+    geometry.applyMatrix4(meshData.transform);
+  }
+
+  return geometry;
+}
+
+async function addPdfExportGeometryOverlaysForItems({
+  overlayScene,
+  items,
+  material,
+  bucketName,
+  fragmentsManager = fragments,
+  context = null,
+  stage = null,
+}) {
+  let meshCount = 0;
+  let geometryCount = 0;
+  const skipped = [];
+
+  for (const [modelId, localIdsSet] of Object.entries(items ?? {})) {
+    const model = fragmentsManager.list.get(modelId);
+    const localIds = [...(localIdsSet ?? [])];
+
+    if (!model) {
+      skipped.push({ modelId, reason: "model-not-loaded" });
+      continue;
+    }
+
+    for (
+      let i = 0;
+      i < localIds.length;
+      i += PDF_EXPORT_CONTEXT_GEOMETRY_CHUNK_SIZE
+    ) {
+      const chunk = localIds.slice(
+        i,
+        i + PDF_EXPORT_CONTEXT_GEOMETRY_CHUNK_SIZE
+      );
+
+      try {
+        const itemsGeometry = await model.getItemsGeometry(chunk, 0);
+
+        for (const itemGeometry of itemsGeometry ?? []) {
+          for (const meshData of itemGeometry ?? []) {
+            const geometry = createGeometryFromPdfExportMeshData(meshData);
+
+            if (!geometry) {
+              skipped.push({
+                modelId,
+                localId: meshData?.localId,
+                reason: "empty-geometry",
+              });
+              continue;
+            }
+
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.name = `pdf-export-${bucketName}-${modelId}-${
+              meshData.localId ?? "mesh"
+            }-${meshCount}`;
+            overlayScene.add(mesh);
+            meshCount += 1;
+            geometryCount += 1;
+          }
+        }
+      } catch (error) {
+        skipped.push({
+          modelId,
+          chunkStart: i,
+          chunkSize: chunk.length,
+          reason: "geometry-error",
+          message: getErrorMessage(error),
+        });
+      }
+    }
+  }
+
+  logPdfExportBreadcrumb(context, "Built PDF export geometry overlay bucket.", {
+    stageId: stage?.id,
+    stageName: stage?.name,
+    bucketName,
+    meshCount,
+    geometryCount,
+    skipped: skipped.slice(0, 20),
+    skippedCount: skipped.length,
   });
-  const screenMesh = new THREE.Mesh(
-    new THREE.PlaneGeometry(2, 2),
-    screenMaterial
-  );
 
-  screenScene.add(screenMesh);
-  renderer.render(screenScene, screenCamera);
+  return {
+    meshCount,
+    geometryCount,
+    skippedCount: skipped.length,
+  };
+}
 
-  screenMesh.geometry.dispose();
-  screenMaterial.dispose();
+async function createPdfExportGreyContextScene({
+  context,
+  stage,
+  contextItems,
+  fragmentsManager = fragments,
+}) {
+  const overlayScene = new THREE.Scene();
+  const material = PDF_EXPORT_GREY_CONTEXT_MATERIAL.clone();
+
+  const contextGeometry = await addPdfExportGeometryOverlaysForItems({
+    overlayScene,
+    items: contextItems,
+    material,
+    bucketName: "context-geometry",
+    fragmentsManager,
+    context,
+    stage,
+  });
+
+  return {
+    overlayScene,
+    contextGeometry,
+  };
 }
 
 async function renderPdfExportOverrideMaterialFrame({
@@ -2152,36 +2252,30 @@ async function renderPdfExportOverrideMaterialFrame({
   const previousRenderTarget = renderer.getRenderTarget();
   const previousClearColor = renderer.getClearColor(new THREE.Color());
   const previousClearAlpha = renderer.getClearAlpha();
-  const size = renderer.getSize(new THREE.Vector2());
-  const pixelRatio = renderer.getPixelRatio();
   const hasHighlightItems =
     visualState?.highlightItems && !isModelIdMapEmpty(visualState.highlightItems);
-  const target = new THREE.WebGLRenderTarget(
-    Math.max(1, Math.floor(size.x * pixelRatio)),
-    Math.max(1, Math.floor(size.y * pixelRatio)),
-    {
-      samples: 4,
-      colorSpace: THREE.SRGBColorSpace,
-    }
-  );
+  let greyContextOverlay = null;
 
   try {
     await hider.set(true);
     await fragmentsManager.core.update(true);
     await waitForAnimationFrames(1);
 
-    // Keep the grey base out of the visible canvas. Fragments visibility
-    // updates for the red/green pass can trigger their own render and clear the
-    // canvas, so the context pass is first captured into a render target.
-    threeScene.overrideMaterial = PDF_EXPORT_GREY_CONTEXT_MATERIAL;
-    renderer.setRenderTarget(target);
-    renderer.setClearColor("#ffffff", 0);
+    greyContextOverlay = await createPdfExportGreyContextScene({
+      context,
+      stage: visualState?.stage,
+      contextItems: visualState?.contextItems,
+      fragmentsManager,
+    });
+
+    // Draw an export-only Three geometry layer for grey context. This avoids
+    // Fragment material mutation for context items, while still giving the PDF
+    // capture real grey geometry pixels to crop and place.
+    renderer.setRenderTarget(null);
+    renderer.setClearColor("#ffffff", 1);
     renderer.autoClear = true;
     renderer.clear();
-    renderer.render(threeScene, camera);
-
-    threeScene.overrideMaterial = null;
-    renderer.setRenderTarget(null);
+    renderer.render(greyContextOverlay.overlayScene, camera);
 
     if (hasHighlightItems) {
       await hider.isolate(visualState.highlightItems);
@@ -2189,22 +2283,24 @@ async function renderPdfExportOverrideMaterialFrame({
       await waitForAnimationFrames(1);
     }
 
-    // Composite the saved grey context back to the visible canvas, then draw the
-    // isolated real Fragments geometry over it without clearing.
-    renderer.setRenderTarget(null);
-    renderer.setClearColor("#ffffff", 1);
-    renderer.autoClear = true;
-    renderer.clear();
-    renderTextureToScreen(renderer, target.texture);
-
     renderer.autoClear = false;
     if (hasHighlightItems) {
       renderer.render(threeScene, camera);
     }
 
+    const canvas = renderer.domElement;
+
+    if (!canvas) {
+      throw new Error(
+        "PDF export override-material canvas capture failed: WebGL renderer canvas is unavailable."
+      );
+    }
+
+    const imageDataUrl = canvas.toDataURL("image/png");
+
     logPdfExportBreadcrumb(
       context,
-      "Rendered grey override + fragment highlight PDF frame.",
+      "Rendered and captured grey geometry context + fragment highlight PDF frame.",
       {
         hasHighlightItems: Boolean(hasHighlightItems),
         highlightItemCount: countItemsInModelIdMap(
@@ -2212,14 +2308,23 @@ async function renderPdfExportOverrideMaterialFrame({
         ),
         greyMaterialColor: PDF_EXPORT_COLORS.context,
         greyOpacity: PDF_EXPORT_GREY_CONTEXT_OPACITY,
+        contextGeometry: greyContextOverlay.contextGeometry,
+        canvasWidth: canvas.width,
+        canvasHeight: canvas.height,
       }
     );
+
+    return {
+      imageDataUrl,
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
+    };
   } finally {
     renderer.autoClear = previousAutoClear;
     threeScene.overrideMaterial = previousOverrideMaterial;
     renderer.setRenderTarget(previousRenderTarget);
     renderer.setClearColor(previousClearColor, previousClearAlpha);
-    target.dispose();
+    disposePdfExportOverlayScene(greyContextOverlay?.overlayScene);
   }
 }
 
@@ -2239,7 +2344,6 @@ async function applyPdfExportVisualState(
   const {
     currentGeometryItems,
     previousOnlyItems,
-    remainderItems,
     bucketCounts,
   } = preparedBuckets ?? (await buildPdfExportBuckets(stageId, fragmentsManager));
 
@@ -2250,63 +2354,19 @@ async function applyPdfExportVisualState(
     useOpacity: PDF_EXPORT_USE_OPACITY,
   });
 
-  await hider.set(true);
-  await resetPdfExportFragmentStyles(context, "before PDF export styling", {
+  await resetPdfExportFragmentStyles(context, "before PDF export foreground styling", {
     componentsManager,
     fragmentsManager,
     worldOverride,
     hider,
   });
 
-  if (isOverrideMaterialPdfExportEnabled()) {
-    const highlightItems = mergeModelIdMaps(
-      previousOnlyItems,
-      currentGeometryItems
-    );
-
-    const highlightResults = await applyPdfExportHighlightStyles({
-      context,
-      stage,
-      currentGeometryItems,
-      previousOnlyItems,
-      fragmentsManager,
-    });
-
-    await fragmentsManager.core.update(true);
-
-    logPdfExportBreadcrumb(
-      context,
-      "Applied experimental override-material PDF export visual state.",
-      {
-        stageId,
-        stageName: stage.name,
-        contextMode: PDF_EXPORT_CONTEXT_RENDER_MODE,
-        bucketCounts,
-        highlightItemCount: countItemsInModelIdMap(highlightItems),
-        highlightResults,
-      }
-    );
-
-    return {
-      renderMode: PDF_EXPORT_RENDER_MODES.overrideMaterialExperiment,
-      highlightItems,
-      dispose: async () => {
-        for (const [, model] of fragmentsManager.list) {
-          await model.resetColor?.();
-        }
-
-        await fragmentsManager.resetHighlight?.();
-        await fragmentsManager.core.update(true);
-      },
-    };
-  }
-
+  await hider.set(true);
   await applyPdfExportBucketStyles({
     context,
     stage,
     currentGeometryItems,
     previousOnlyItems,
-    remainderItems,
     bucketCounts,
     fragmentsManager,
     hider,
@@ -2325,7 +2385,7 @@ async function applyPdfExportVisualState(
   });
 
   return {
-    renderMode: PDF_EXPORT_RENDER_MODES.fragmentColors,
+    renderMode: PDF_EXPORT_RENDER_MODES.imageLayer,
     dispose: () => {},
   };
 }
@@ -2956,20 +3016,216 @@ async function prepareViewerForPdfExport(
   // Update lift labels after camera is in the export position.
   await updateLiftLabelsForCurrentView();
 
-  // Apply export visuals after camera/background/labels are ready.
-  const pdfExportVisualState = await applyPdfExportVisualState(
-    stage,
-    preparedBuckets,
-    context
-  );
+  await resetPdfExportFragmentStyles(context, "before layered PDF export");
+  await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
 
-  if (
-    pdfExportVisualState?.renderMode === PDF_EXPORT_RENDER_MODES.fragmentColors
-  ) {
-    await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
+  return {
+    renderMode: PDF_EXPORT_RENDER_MODES.imageLayer,
+    stage,
+    buckets: preparedBuckets,
+    dispose: () => {},
+  };
+}
+
+async function loadImageFromDataUrl(imageDataUrl) {
+  const image = new Image();
+  image.src = imageDataUrl;
+
+  await new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = reject;
+  });
+
+  return image;
+}
+
+async function captureViewerPng(captureElement = ui.viewerArea) {
+  await waitForStableExportFrame({ frames: PDF_EXPORT_SETTLE_FRAMES });
+
+  return withTimeout(
+    toPng(captureElement, {
+      cacheBust: true,
+      fontEmbedCSS: "",
+      pixelRatio: PDF_EXPORT_PIXEL_RATIO,
+      backgroundColor: "#ffffff",
+    }),
+    PDF_CAPTURE_TIMEOUT_MS,
+    "PDF viewer image capture"
+  );
+}
+
+async function makeGreyContextImage(
+  pngDataUrl,
+  {
+    alpha = 0.42,
+    filter = "grayscale(1) brightness(1.18) contrast(0.62)",
+    whiteThreshold = 240,
+  } = {}
+) {
+  const image = await loadImageFromDataUrl(pngDataUrl);
+  const canvas = document.createElement("canvas");
+
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+
+  const context2d = canvas.getContext("2d");
+
+  context2d.fillStyle = "#ffffff";
+  context2d.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Grey context is an image-processing layer, not fragment styling. This keeps
+  // future/remainder IFC items out of expensive Fragments setColor/setOpacity
+  // calls while preserving the same saved camera/view in the exported sheet.
+  context2d.save();
+  context2d.globalAlpha = alpha;
+  context2d.filter = filter;
+  context2d.drawImage(image, 0, 0, canvas.width, canvas.height);
+  context2d.restore();
+
+  forceNearWhitePixelsToWhite(canvas, whiteThreshold);
+
+  return canvas.toDataURL("image/png");
+}
+
+function forceNearWhitePixelsToWhite(canvas, threshold = 250) {
+  const context2d = canvas.getContext("2d");
+  const imageData = context2d.getImageData(0, 0, canvas.width, canvas.height);
+  const { data } = imageData;
+
+  for (let index = 0; index < data.length; index += 4) {
+    if (
+      data[index] >= threshold &&
+      data[index + 1] >= threshold &&
+      data[index + 2] >= threshold
+    ) {
+      data[index] = 255;
+      data[index + 1] = 255;
+      data[index + 2] = 255;
+      data[index + 3] = 255;
+    }
   }
 
-  return pdfExportVisualState;
+  context2d.putImageData(imageData, 0, 0);
+}
+
+async function makeWhiteTransparent(pngDataUrl, threshold = 248) {
+  const image = await loadImageFromDataUrl(pngDataUrl);
+  const canvas = document.createElement("canvas");
+
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+
+  const context2d = canvas.getContext("2d");
+
+  context2d.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+  const imageData = context2d.getImageData(0, 0, canvas.width, canvas.height);
+  const { data } = imageData;
+  const softThreshold = Math.max(0, threshold - 18);
+
+  for (let index = 0; index < data.length; index += 4) {
+    const red = data[index];
+    const green = data[index + 1];
+    const blue = data[index + 2];
+    const whiteness = Math.min(red, green, blue);
+
+    if (red >= threshold && green >= threshold && blue >= threshold) {
+      data[index + 3] = 0;
+    } else if (whiteness > softThreshold) {
+      const opacityRatio =
+        1 - (whiteness - softThreshold) / (threshold - softThreshold);
+      data[index + 3] = Math.round(data[index + 3] * opacityRatio);
+    }
+  }
+
+  context2d.putImageData(imageData, 0, 0);
+
+  return canvas.toDataURL("image/png");
+}
+
+async function compositeImages(backgroundDataUrl, overlayDataUrl) {
+  const [baseImage, overlayImage] = await Promise.all([
+    loadImageFromDataUrl(backgroundDataUrl),
+    loadImageFromDataUrl(overlayDataUrl),
+  ]);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = baseImage.naturalWidth;
+  canvas.height = baseImage.naturalHeight;
+
+  const context2d = canvas.getContext("2d");
+
+  context2d.drawImage(baseImage, 0, 0);
+  context2d.drawImage(
+    overlayImage,
+    0,
+    0,
+    overlayImage.naturalWidth,
+    overlayImage.naturalHeight,
+    0,
+    0,
+    canvas.width,
+    canvas.height
+  );
+
+  forceNearWhitePixelsToWhite(canvas, 240);
+
+  return canvas.toDataURL("image/png");
+}
+
+async function compositeImageOverlay({
+  baseImageDataUrl,
+  overlayImageDataUrl,
+}) {
+  return compositeImages(baseImageDataUrl, overlayImageDataUrl);
+}
+
+function withTransparentCaptureBackgrounds(elements, callback) {
+  const previousBackgrounds = elements.map((element) => ({
+    element,
+    value: element?.style?.getPropertyValue("background") ?? "",
+    priority: element?.style?.getPropertyPriority("background") ?? "",
+  }));
+
+  for (const { element } of previousBackgrounds) {
+    element?.style?.setProperty("background", "transparent", "important");
+  }
+
+  return Promise.resolve(callback()).finally(() => {
+    for (const { element, value, priority } of previousBackgrounds) {
+      if (!element) continue;
+
+      if (value) {
+        element.style.setProperty("background", value, priority);
+      } else {
+        element.style.removeProperty("background");
+      }
+    }
+  });
+}
+
+async function capturePdfExportDomOverlay({
+  captureElement,
+  excludedCanvas,
+  stage,
+}) {
+  const viewerContainer = ui.viewerContainer;
+
+  return withTransparentCaptureBackgrounds(
+    [captureElement, viewerContainer],
+    () =>
+      withTimeout(
+        toPng(captureElement, {
+          cacheBust: true,
+          fontEmbedCSS: "",
+          pixelRatio: PDF_EXPORT_PIXEL_RATIO,
+          backgroundColor: "rgba(255, 255, 255, 0)",
+          filter: (node) => node !== excludedCanvas,
+        }),
+        PDF_CAPTURE_TIMEOUT_MS,
+        `PDF DOM overlay capture for ${stage.name}`
+      )
+  );
 }
 
 async function captureStageSheetData(
@@ -2983,34 +3239,102 @@ async function captureStageSheetData(
     context = null,
   } = {}
 ) {
-  if (
-    visualState?.renderMode ===
-    PDF_EXPORT_RENDER_MODES.overrideMaterialExperiment
-  ) {
-    await renderPdfExportOverrideMaterialFrame({
-      visualState,
-      fragmentsManager,
-      worldOverride,
-      context,
-    });
+  const hider = components.get(OBC.Hider);
+  const buckets = visualState?.buckets ?? (await buildPdfExportBuckets(stage.id));
+  const {
+    currentGeometryItems,
+    previousOnlyItems,
+    bucketCounts,
+  } = buckets;
+  const foregroundItems = mergeModelIdMaps(
+    previousOnlyItems,
+    currentGeometryItems
+  );
+
+  await hider.set(true);
+  await resetPdfExportFragmentStyles(context, "before PDF context image capture", {
+    fragmentsManager,
+    worldOverride,
+    hider,
+  });
+  await waitForStableExportFrame({
+    frames: PDF_EXPORT_SETTLE_FRAMES,
+    fragmentsManager,
+    worldOverride,
+  });
+
+  const contextCapture = await captureViewerPng(captureElement);
+  const greyContextImage = await makeGreyContextImage(contextCapture, {
+    alpha: PDF_EXPORT_GREY_CONTEXT_OPACITY,
+  });
+
+  logPdfExportBreadcrumb(context, "Captured grey PDF context image layer.", {
+    stageId: stage.id,
+    stageName: stage.name,
+    bucketCounts,
+    contextMode: "image-processing-layer",
+  });
+
+  // Restore the same saved view before the foreground pass so both screenshots
+  // use the same camera, viewport size, clipping, and DOM marker layout.
+  await restoreSavedViewForStage(stage.id, { transition: false });
+  await updateLiftLabelsForCurrentView();
+  await waitForStableExportFrame({
+    frames: PDF_EXPORT_SETTLE_FRAMES,
+    fragmentsManager,
+    worldOverride,
+  });
+
+  await resetPdfExportFragmentStyles(context, "before PDF foreground capture", {
+    fragmentsManager,
+    worldOverride,
+    hider,
+  });
+
+  if (isModelIdMapEmpty(foregroundItems)) {
+    await hider.set(false);
   } else {
-    await waitForStableExportFrame({
-      frames: PDF_EXPORT_SETTLE_FRAMES,
-      fragmentsManager,
-      worldOverride,
-    });
+    await hider.isolate(foregroundItems);
   }
 
-  const rawImageDataUrl = await withTimeout(
-    toPng(captureElement, {
-      cacheBust: true,
-      fontEmbedCSS: "",
-      pixelRatio: PDF_EXPORT_PIXEL_RATIO,
-      backgroundColor: "#ffffff",
-    }),
-    PDF_CAPTURE_TIMEOUT_MS,
-    `PDF image capture for ${stage.name}`
+  await waitForStableExportFrame({
+    frames: PDF_EXPORT_SETTLE_FRAMES,
+    fragmentsManager,
+    worldOverride,
+  });
+
+  // Only previous/current IFC items receive fragment styling in the export.
+  // The pale grey future/context model is composited from the raster layer above.
+  await applyPdfExportHighlightStyles({
+    context,
+    stage,
+    currentGeometryItems,
+    previousOnlyItems,
+    fragmentsManager,
+  });
+
+  await waitForStableExportFrame({
+    frames: PDF_EXPORT_SETTLE_FRAMES,
+    fragmentsManager,
+    worldOverride,
+  });
+
+  const foregroundCapture = await captureViewerPng(captureElement);
+  const transparentForeground = await makeWhiteTransparent(
+    foregroundCapture,
+    248
   );
+  const rawImageDataUrl = await compositeImages(
+    greyContextImage,
+    transparentForeground
+  );
+
+  logPdfExportBreadcrumb(context, "Composited layered PDF export image.", {
+    stageId: stage.id,
+    stageName: stage.name,
+    foregroundItemCount: countItemsInModelIdMap(foregroundItems),
+    imageMode: "grey-context-raster-plus-fragment-highlight-overlay",
+  });
 
   const croppedCapture = await withTimeout(
     cropWhitespaceFromImage(rawImageDataUrl, {
