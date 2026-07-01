@@ -153,7 +153,6 @@ export async function generateStageKeyPlanImage({
       stageName: stage?.name,
       gridMetadata: rawMetadata,
       planCamera,
-      stageBox,
     });
 
     if (KEY_PLAN_DEBUG) {
@@ -434,7 +433,6 @@ async function decorateModelOnlyKeyPlan({
   stageName,
   gridMetadata,
   planCamera,
-  stageBox,
 }) {
   const image = await loadImage(baseImageDataUrl);
 
@@ -456,7 +454,6 @@ async function decorateModelOnlyKeyPlan({
     canvas,
     gridMetadata,
     planCamera,
-    stageBox,
     stageName,
   });
 
@@ -471,13 +468,10 @@ async function decorateModelOnlyKeyPlan({
   return canvas.toDataURL("image/png");
 }
 
-function getNearestGridForStage({
+function getPrimaryGridAxes({
   gridMetadata,
-  stageBox,
   stageName,
 }) {
-  const stageCentreY = getStageCentreY(stageBox);
-
   if (!gridMetadata?.available || !Array.isArray(gridMetadata.grids)) {
     console.warn(
       `${KEY_PLAN_LOG_PREFIX} Grid metadata is missing or invalid; generating model-only key plan.`,
@@ -488,59 +482,40 @@ function getNearestGridForStage({
     );
 
     return {
-      grid: null,
-      stageCentreY,
+      axes: [],
+      selectedGrids: [],
     };
   }
 
-  const usableGrids = gridMetadata.grids.filter(
+  const selectedGridIds = new Set(
+    (gridMetadata.primaryGridLevel?.gridIds ?? []).map(normaliseGridId)
+  );
+  const selectedGrids = gridMetadata.grids.filter((grid) =>
+    selectedGridIds.has(normaliseGridId(grid.gridId))
+  );
+  const usableSelectedGrids = selectedGrids.filter(
     (grid) => Array.isArray(grid?.axes) && grid.axes.length > 0
   );
 
-  if (usableGrids.length === 0) {
+  if (usableSelectedGrids.length === 0) {
     console.warn(
-      `${KEY_PLAN_LOG_PREFIX} Grid metadata contains no usable grids; generating model-only key plan.`,
+      `${KEY_PLAN_LOG_PREFIX} Primary grid level contains no usable grids; generating model-only key plan.`,
       {
         stageName,
+        primaryGridLevel: gridMetadata.primaryGridLevel ?? null,
       }
     );
 
     return {
-      grid: null,
-      stageCentreY,
+      axes: [],
+      selectedGrids: [],
     };
   }
-
-  if (!Number.isFinite(stageCentreY)) {
-    return {
-      grid: usableGrids[0],
-      stageCentreY,
-    };
-  }
-
-  const grid = usableGrids.reduce((nearest, candidate) => {
-    const nearestDistance = Math.abs(
-      (nearest?.elevation ?? 0) - stageCentreY
-    );
-    const candidateDistance = Math.abs(
-      (candidate?.elevation ?? 0) - stageCentreY
-    );
-
-    return candidateDistance < nearestDistance ? candidate : nearest;
-  }, usableGrids[0]);
 
   return {
-    grid,
-    stageCentreY,
+    axes: usableSelectedGrids.flatMap((grid) => grid.axes),
+    selectedGrids: usableSelectedGrids,
   };
-}
-
-function getStageCentreY(stageBox) {
-  if (!stageBox?.isBox3 || stageBox.isEmpty()) {
-    return null;
-  }
-
-  return (stageBox.min.y + stageBox.max.y) / 2;
 }
 
 function drawGridOverlayOnCanvas({
@@ -548,7 +523,6 @@ function drawGridOverlayOnCanvas({
   canvas,
   gridMetadata,
   planCamera,
-  stageBox,
   stageName,
 }) {
   if (!planCamera) {
@@ -556,34 +530,28 @@ function drawGridOverlayOnCanvas({
   }
 
   const {
-    grid,
-    stageCentreY,
-  } = getNearestGridForStage({
+    axes,
+    selectedGrids,
+  } = getPrimaryGridAxes({
     gridMetadata,
-    stageBox,
     stageName,
   });
 
-  if (!grid) {
+  if (axes.length === 0) {
     return;
   }
 
-  const axes = grid.axes ?? [];
-  const selectedGridName = grid.name ?? `Grid ${grid.gridId ?? ""}`.trim();
-
   console.log(`${KEY_PLAN_LOG_PREFIX} Grid overlay diagnostics`, {
     stageName,
-    selectedGridName,
-    selectedGridElevation: grid.elevation,
-    stageCentreY,
+    selectedGridNames: selectedGrids.map((grid) => grid.name),
+    selectedGridElevation: gridMetadata.primaryGridLevel?.elevation ?? null,
     axisCount: axes.length,
   });
 
   window.__lastKeyPlanGridDebug = {
     stageName,
-    selectedGridName,
-    selectedGridElevation: grid.elevation,
-    stageCentreY,
+    selectedGridNames: selectedGrids.map((grid) => grid.name),
+    selectedGridElevation: gridMetadata.primaryGridLevel?.elevation ?? null,
     axes,
   };
 
@@ -598,6 +566,8 @@ function drawGridOverlayOnCanvas({
   context.lineWidth = 2;
   context.lineCap = "round";
   context.lineJoin = "round";
+
+  const labelCandidates = [];
 
   for (const axis of axes) {
     const points = axis?.points ?? [];
@@ -632,10 +602,171 @@ function drawGridOverlayOnCanvas({
 
     if (hasDrawablePoint) {
       context.stroke();
+      labelCandidates.push(...getAxisLabelCandidates({
+        axis,
+        planCamera,
+        canvas,
+      }));
     }
   }
 
+  drawGridLabelsOnCanvas({
+    context,
+    canvas,
+    labelCandidates,
+  });
+
   context.restore();
+}
+
+function getAxisLabelCandidates({
+  axis,
+  planCamera,
+  canvas,
+}) {
+  const tag = String(axis?.tag ?? "").trim();
+  const points = axis?.points ?? [];
+
+  if (!tag || points.length < 2) {
+    return [];
+  }
+
+  const firstPoint = projectWorldPointToCanvas({
+    point: points[0],
+    planCamera,
+    canvas,
+  });
+  const lastPoint = projectWorldPointToCanvas({
+    point: points[points.length - 1],
+    planCamera,
+    canvas,
+  });
+
+  return [
+    createGridLabelCandidate(tag, firstPoint, lastPoint, -1),
+    createGridLabelCandidate(tag, lastPoint, firstPoint, 1),
+  ].filter(Boolean);
+}
+
+function createGridLabelCandidate(
+  text,
+  point,
+  oppositePoint,
+  directionSign
+) {
+  if (!point || !oppositePoint) {
+    return null;
+  }
+
+  const directionX = point.x - oppositePoint.x;
+  const directionY = point.y - oppositePoint.y;
+  const length = Math.hypot(directionX, directionY);
+  const offset = 12;
+
+  if (length < 1e-6) {
+    return {
+      text,
+      x: point.x,
+      y: point.y - offset * directionSign,
+    };
+  }
+
+  return {
+    text,
+    x: point.x + (directionX / length) * offset,
+    y: point.y + (directionY / length) * offset,
+  };
+}
+
+function drawGridLabelsOnCanvas({
+  context,
+  canvas,
+  labelCandidates,
+}) {
+  const drawnLabels = new Set();
+  const fontSize = Math.max(12, Math.round(canvas.width / 90));
+  const horizontalPadding = Math.round(fontSize * 0.55);
+  const verticalPadding = Math.round(fontSize * 0.32);
+  const radius = Math.round(fontSize * 0.35);
+
+  context.font = `700 ${fontSize}px Arial, sans-serif`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+
+  for (const label of labelCandidates) {
+    if (!label || !Number.isFinite(label.x) || !Number.isFinite(label.y)) {
+      continue;
+    }
+
+    const key = [
+      label.text.toUpperCase(),
+      Math.round(label.x / 4),
+      Math.round(label.y / 4),
+    ].join("|");
+
+    if (drawnLabels.has(key)) {
+      continue;
+    }
+
+    drawnLabels.add(key);
+
+    const metrics = context.measureText(label.text);
+    const width = metrics.width + horizontalPadding * 2;
+    const height = fontSize + verticalPadding * 2;
+    const x = THREE.MathUtils.clamp(
+      label.x,
+      width / 2 + 2,
+      canvas.width - width / 2 - 2
+    );
+    const y = THREE.MathUtils.clamp(
+      label.y,
+      height / 2 + 2,
+      canvas.height - height / 2 - 2
+    );
+
+    context.fillStyle = "rgba(255, 255, 255, 0.92)";
+    drawRoundedRectOnCanvas(
+      context,
+      x - width / 2,
+      y - height / 2,
+      width,
+      height,
+      radius
+    );
+    context.fill();
+
+    context.strokeStyle = "rgba(0, 80, 180, 0.65)";
+    context.lineWidth = 1;
+    context.stroke();
+
+    context.fillStyle = "rgba(0, 80, 180, 0.95)";
+    context.fillText(label.text, x, y + 1);
+  }
+}
+
+function drawRoundedRectOnCanvas(context, x, y, width, height, radius) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(
+    x + width,
+    y + height,
+    x + width - safeRadius,
+    y + height
+  );
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+  context.closePath();
+}
+
+function normaliseGridId(gridId) {
+  return String(gridId ?? "").trim();
 }
 
 function projectWorldPointToCanvas({

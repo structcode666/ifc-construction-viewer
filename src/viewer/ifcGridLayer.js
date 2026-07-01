@@ -20,6 +20,9 @@ const GRID_LABEL_WORLD_HEIGHT = 0.65;
 const GRID_LABEL_BACKGROUND = "#172033";
 const GRID_LABEL_TEXT = "#ffffff";
 const GRID_LABEL_RENDER_ORDER = 1000;
+const GRID_LEVEL_ELEVATION_TOLERANCE = 0.10;
+const GRID_MODEL_FOOTPRINT_MARGIN_RATIO = 0.10;
+const GRID_MODEL_FOOTPRINT_MIN_MARGIN = 1;
 
 // This IFC uses millimetres. The Fragments model uses metres.
 const MM_TO_M = 0.001;
@@ -143,11 +146,35 @@ export async function extractIfcGridMetadataFromBuffer({
       (total, grid) => total + grid.axes.length,
       0
     );
+    const primaryGridLevel = selectPrimaryGridLevel({
+      grids,
+      modelBounds,
+    });
+
+    if (primaryGridLevel) {
+      console.log(`${LOG_PREFIX} Primary grid level selected`, {
+        elevation: primaryGridLevel.elevation,
+        gridIds: primaryGridLevel.gridIds,
+        gridNames: primaryGridLevel.gridNames,
+        intersectingAxisCount: primaryGridLevel.intersectingAxisCount,
+        usedFallback: primaryGridLevel.usedFallback,
+      });
+    }
 
     const metadata = {
       available: grids.length > 0,
       grids,
       modelBounds,
+      primaryGridLevel: primaryGridLevel
+        ? {
+            elevation: primaryGridLevel.elevation,
+            gridIds: primaryGridLevel.gridIds,
+            gridNames: primaryGridLevel.gridNames,
+            intersectingAxisCount:
+              primaryGridLevel.intersectingAxisCount,
+            usedFallback: primaryGridLevel.usedFallback,
+          }
+        : null,
       debug: {
         ifcGridCount: gridIds.length,
         extractedGridCount: grids.length,
@@ -283,15 +310,54 @@ export function createIfcGridLayer({
   }
 
   function show() {
+    return showPrimaryLevel();
+  }
+
+  function showPrimaryLevel() {
+    const primaryGridIds = metadata?.primaryGridLevel?.gridIds;
+    const selectedGridIds = createGridIdSet(primaryGridIds);
+    const canUsePrimarySelection = selectedGridIds.size > 0;
+
     root.visible = true;
 
     for (const gridGroup of gridGroups.values()) {
-      gridGroup.visible = true;
+      gridGroup.visible =
+        !canUsePrimarySelection ||
+        selectedGridIds.has(normaliseGridId(gridGroup.userData.gridId));
+    }
+
+    let selectedGroups = [...gridGroups.values()].filter(
+      (group) => group.visible
+    );
+
+    if (gridGroups.size > 0 && selectedGroups.length === 0) {
+      console.warn(
+        `${LOG_PREFIX} Primary grid level did not match any viewer groups; showing all grids instead.`,
+        {
+          primaryGridIds,
+          availableGridIds: [...gridGroups.values()].map(
+            (group) => group.userData.gridId
+          ),
+        }
+      );
+
+      for (const gridGroup of gridGroups.values()) {
+        gridGroup.visible = true;
+      }
+
+      selectedGroups = [...gridGroups.values()];
     }
 
     renderWorld(world);
 
-    return true;
+    return {
+      rootVisible: true,
+      selectedElevation: metadata?.primaryGridLevel?.elevation ?? null,
+      selectedGridCount: selectedGroups.length,
+      selectedGridNames: selectedGroups.map(
+        (group) => group.userData.gridName
+      ),
+    };
   }
 
   function hide() {
@@ -303,11 +369,11 @@ export function createIfcGridLayer({
   }
 
   function toggle() {
-    root.visible = !root.visible;
+    if (root.visible) {
+      return hide();
+    }
 
-    renderWorld(world);
-
-    return root.visible;
+    return showPrimaryLevel();
   }
 
   function showOnly(gridNames = []) {
@@ -352,6 +418,7 @@ export function createIfcGridLayer({
     return {
       rootVisible: root.visible,
       gridGroupCount: gridGroups.size,
+      primaryGridLevel: metadata?.primaryGridLevel ?? null,
       grids: [...gridGroups.values()].map((group) => ({
         gridId: group.userData.gridId,
         gridName: group.userData.gridName,
@@ -373,6 +440,7 @@ export function createIfcGridLayer({
     clear,
     setMetadata,
     show,
+    showPrimaryLevel,
     hide,
     toggle,
     showOnly,
@@ -1052,6 +1120,215 @@ function getGridElevation(grid) {
     elevations.reduce((total, elevation) => total + elevation, 0) /
     elevations.length
   );
+}
+
+export function selectPrimaryGridLevel({
+  grids,
+  modelBounds,
+} = {}) {
+  const usableGrids = Array.isArray(grids)
+    ? grids.filter((grid) => Array.isArray(grid?.axes) && grid.axes.length > 0)
+    : [];
+
+  if (usableGrids.length === 0) {
+    return null;
+  }
+
+  const clusters = clusterGridsByElevation(usableGrids).map((cluster) => {
+    const intersectingAxisCount = countIntersectingAxesForCluster({
+      cluster,
+      modelBounds,
+    });
+
+    return {
+      ...cluster,
+      intersectingAxisCount,
+      relevant: intersectingAxisCount > 0,
+    };
+  });
+
+  const relevantClusters = clusters.filter((cluster) => cluster.relevant);
+  const candidateClusters =
+    relevantClusters.length > 0 ? relevantClusters : clusters;
+  const usedFallback = relevantClusters.length === 0;
+
+  const selectedCluster = [...candidateClusters].sort((a, b) => {
+    const elevationDifference = a.elevation - b.elevation;
+
+    if (Math.abs(elevationDifference) > GRID_LEVEL_ELEVATION_TOLERANCE) {
+      return elevationDifference;
+    }
+
+    return b.intersectingAxisCount - a.intersectingAxisCount;
+  })[0];
+
+  if (!selectedCluster) {
+    return null;
+  }
+
+  return {
+    elevation: selectedCluster.elevation,
+    grids: selectedCluster.grids,
+    gridIds: selectedCluster.grids.map((grid) => grid.gridId),
+    gridNames: selectedCluster.grids.map((grid) => grid.name),
+    intersectingAxisCount: selectedCluster.intersectingAxisCount,
+    usedFallback,
+  };
+}
+
+function clusterGridsByElevation(grids) {
+  const sortedGrids = [...grids].sort(
+    (a, b) => normaliseElevation(a.elevation) - normaliseElevation(b.elevation)
+  );
+  const clusters = [];
+
+  for (const grid of sortedGrids) {
+    const elevation = normaliseElevation(grid.elevation);
+    const lastCluster = clusters[clusters.length - 1];
+
+    if (
+      lastCluster &&
+      Math.abs(elevation - lastCluster.elevation) <=
+        GRID_LEVEL_ELEVATION_TOLERANCE
+    ) {
+      lastCluster.grids.push(grid);
+      lastCluster.elevations.push(elevation);
+      lastCluster.elevation = averageNumbers(lastCluster.elevations);
+      continue;
+    }
+
+    clusters.push({
+      elevation,
+      elevations: [elevation],
+      grids: [grid],
+    });
+  }
+
+  return clusters;
+}
+
+function countIntersectingAxesForCluster({
+  cluster,
+  modelBounds,
+}) {
+  const expandedBounds = expandPlanBounds(modelBounds);
+
+  if (!expandedBounds) {
+    return 0;
+  }
+
+  let count = 0;
+
+  for (const grid of cluster.grids) {
+    for (const axis of grid.axes ?? []) {
+      const axisBounds = getAxisPlanBounds(axis);
+
+      if (planBoundsIntersect(axisBounds, expandedBounds)) {
+        count += 1;
+      }
+    }
+  }
+
+  return count;
+}
+
+function expandPlanBounds(modelBounds) {
+  const minX = Number(modelBounds?.min?.x);
+  const maxX = Number(modelBounds?.max?.x);
+  const minZ = Number(modelBounds?.min?.z);
+  const maxZ = Number(modelBounds?.max?.z);
+
+  if (
+    !Number.isFinite(minX) ||
+    !Number.isFinite(maxX) ||
+    !Number.isFinite(minZ) ||
+    !Number.isFinite(maxZ)
+  ) {
+    return null;
+  }
+
+  const width = Math.max(maxX - minX, 0);
+  const depth = Math.max(maxZ - minZ, 0);
+  const margin = Math.max(
+    Math.max(width, depth) * GRID_MODEL_FOOTPRINT_MARGIN_RATIO,
+    GRID_MODEL_FOOTPRINT_MIN_MARGIN
+  );
+
+  return {
+    minX: minX - margin,
+    maxX: maxX + margin,
+    minZ: minZ - margin,
+    maxZ: maxZ + margin,
+  };
+}
+
+function getAxisPlanBounds(axis) {
+  const points = Array.isArray(axis?.points) ? axis.points : [];
+  const bounds = {
+    minX: Infinity,
+    maxX: -Infinity,
+    minZ: Infinity,
+    maxZ: -Infinity,
+  };
+
+  for (const point of points) {
+    const x = Number(point?.x);
+    const z = Number(point?.z);
+
+    if (!Number.isFinite(x) || !Number.isFinite(z)) {
+      continue;
+    }
+
+    bounds.minX = Math.min(bounds.minX, x);
+    bounds.maxX = Math.max(bounds.maxX, x);
+    bounds.minZ = Math.min(bounds.minZ, z);
+    bounds.maxZ = Math.max(bounds.maxZ, z);
+  }
+
+  return Number.isFinite(bounds.minX) ? bounds : null;
+}
+
+function planBoundsIntersect(a, b) {
+  if (!a || !b) {
+    return false;
+  }
+
+  return (
+    a.maxX >= b.minX &&
+    a.minX <= b.maxX &&
+    a.maxZ >= b.minZ &&
+    a.minZ <= b.maxZ
+  );
+}
+
+function normaliseElevation(value) {
+  const elevation = Number(value);
+
+  return Number.isFinite(elevation) ? elevation : 0;
+}
+
+function averageNumbers(values) {
+  if (!values.length) {
+    return 0;
+  }
+
+  return values.reduce((total, value) => total + value, 0) / values.length;
+}
+
+function createGridIdSet(gridIds) {
+  if (!Array.isArray(gridIds)) {
+    return new Set();
+  }
+
+  return new Set(
+    gridIds
+      .map(normaliseGridId)
+      .filter((gridId) => gridId !== "")
+  );
+}
+
+function normaliseGridId(gridId) {
+  return String(gridId ?? "").trim();
 }
 
 function getModelBounds(model) {
