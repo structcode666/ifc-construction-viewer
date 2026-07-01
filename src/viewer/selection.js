@@ -8,6 +8,7 @@ export function initSelection({
   fragments,
   ui,
   onSelectionChanged,
+  afterVisibilityChanged = async () => {},
   canSelect = () => true,
 }) {
   let selectedItem = null;
@@ -302,9 +303,9 @@ export function initSelection({
     await fragments.resetHighlight();
     await fragments.core.update(true);
 
-    // if (onSelectionChanged) {
-    //   await onSelectionChanged();
-    // }
+    if (onSelectionChanged) {
+      await onSelectionChanged(selectedItem);
+    }
 
     setStatus("Selection cleared.");
     setSelectionInfo("No element selected.");
@@ -322,9 +323,9 @@ export function initSelection({
     await fragments.highlight(selectionMaterial, modelIdMap);
     await fragments.core.update(true);
 
-    // if (onSelectionChanged) {
-    //   await onSelectionChanged();
-    // }
+    if (onSelectionChanged) {
+      await onSelectionChanged(selectedItem);
+    }
 
     const stats = getSelectionStats(modelIdMap);
 
@@ -605,6 +606,7 @@ export function initSelection({
 
     try {
       await hider.set(false, selectedItem);
+      await afterVisibilityChanged();
       setStatus("Selected item hidden.");
     } catch (error) {
       console.error("Hide failed:", error);
@@ -620,6 +622,7 @@ export function initSelection({
 
     try {
       await hider.isolate(selectedItem);
+      await afterVisibilityChanged();
       setStatus("Selected item isolated.");
     } catch (error) {
       console.error("Isolation failed:", error);

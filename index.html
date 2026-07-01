@@ -160,6 +160,18 @@
             Isolate Selected
           </button>
 
+          <button
+            id="removeSelectedButton"
+            title="Removes selected elements from this sequencing project. The original IFC is not modified."
+            disabled
+          >
+            Remove Selected
+          </button>
+
+          <button id="restoreRemovedButton" disabled>
+            Restore Removed
+          </button>
+
           <button id="resetVisibilityButton">
             Reset Visibility
           </button>
@@ -198,35 +210,16 @@
             </p>
           </div>
 
-          <div class="measurement-toolbar">
-            <div class="section-cut-title">
-              Measurements
-            </div>
-
-            <div class="measurement-grid">
-              <button id="measureLengthButton" class="viewer-pill-button">
-                Length
-              </button>
-
-              <button id="measureAreaButton" class="viewer-pill-button">
-                Area
-              </button>
-
-              <button id="measureAngleButton" class="viewer-pill-button">
-                Angle
-              </button>
-
-              <button id="measureVolumeButton" class="viewer-pill-button">
-                Volume
-              </button>
-            </div>
-
-            <button id="deleteMeasurementButton" class="viewer-pill-button">
-              Delete Measurement
-            </button>
-
-            <button id="clearMeasurementsButton" class="viewer-pill-button">
-              Clear Measurements
+          <div class="grid-toolbar">
+            <button
+              id="toggleGridsButton"
+              type="button"
+              class="viewer-pill-button"
+              aria-pressed="false"
+              disabled
+            >
+              <span aria-hidden="true">#</span>
+              <span>Show Grids</span>
             </button>
           </div>
         </div>

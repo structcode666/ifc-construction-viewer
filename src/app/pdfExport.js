@@ -195,6 +195,7 @@ export function addStageSheetToPdf(pdf, {
   imageDataUrl,
   imagePixelWidth,
   imagePixelHeight,
+  keyPlanImageDataUrl = null,
   stageName,
   projectTitle = "PROJECT TITLE",
   sheetTitle = "CONSTRUCTION SEQUENCING",
@@ -255,8 +256,40 @@ export function addStageSheetToPdf(pdf, {
   pdf.setFont("helvetica", "normal");
   pdf.setFontSize(7);
 
-  pdf.rect(leftX + 4, contentTop + 11, leftPanelWidth - 8, 75);
-  pdf.text("Placeholder key plan / grid diagram", leftX + 8, contentTop + 22);
+  const keyPlanBox = {
+    boxX: leftX + 4,
+    boxY: contentTop + 11,
+    boxWidth: leftPanelWidth - 8,
+    boxHeight: 75,
+  };
+
+  pdf.rect(
+    keyPlanBox.boxX,
+    keyPlanBox.boxY,
+    keyPlanBox.boxWidth,
+    keyPlanBox.boxHeight
+  );
+
+  if (keyPlanImageDataUrl) {
+    const keyPlanImage = fitImageInsideBox({
+      imageWidth: 900,
+      imageHeight: 620,
+      ...keyPlanBox,
+    });
+
+    pdf.addImage(
+      keyPlanImageDataUrl,
+      "PNG",
+      keyPlanImage.x,
+      keyPlanImage.y,
+      keyPlanImage.width,
+      keyPlanImage.height
+    );
+  } else {
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(6.5);
+    pdf.text("GRID DATA NOT AVAILABLE", leftX + 8, contentTop + 22);
+  }
 
   const tableY = contentTop + 95;
 

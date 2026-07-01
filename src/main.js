@@ -12,8 +12,8 @@ import {
 } from "./viewer/clipper.js";
 import { saveProjectFile, readProjectFile } from "./app/projectStorage.js";
 import { createLiftLabelManager } from "./viewer/liftLabels.js";
-import { initMeasurements } from "./viewer/measurements.js";
 import { softResetFragmentVisualState } from "./viewer/fragmentVisualReset.js";
+import { generateStageKeyPlanImage } from "./viewer/keyPlan.js";
 
 import { toPng } from "html-to-image";
 import {
@@ -22,6 +22,8 @@ import {
   exportMultipleStageImagesToPdf,
 } from "./app/pdfExport.js";
 import * as THREE from "three";
+
+import { createIfcGridLayer } from "./viewer/ifcGridLayer.js";
 
 const ui = getUI();
 
@@ -61,10 +63,9 @@ let currentModel = null;
 let currentIfcFile = null;
 
 let selection = null;
-let measurements = null;
-let activeMeasurementTool = null;
 let mode = "staging";
 let showContext = false;
+let showGrids = false;
 
 let viewpoints = null;
 let liftLabels = null;
@@ -72,6 +73,8 @@ let liftLabels = null;
 let showLiftLabels = false;
 let isPdfExporting = false;
 let pdfExportRunNumber = 0;
+let ifcGridLayer = null;
+let removedItems = {};
 
 const staging = createStagingManager();
 
@@ -85,6 +88,11 @@ async function startApp() {
   world = setup.world;
   orbitControls = setup.orbitControls;
   fragments = setup.fragments;
+
+  ifcGridLayer = createIfcGridLayer({ world });
+
+  // Temporary DevTools access while we test alignment.
+  window.ifcGridLayer = ifcGridLayer;
 
   viewpoints = components.get(OBC.Viewpoints);
   viewpoints.world = world;
@@ -172,24 +180,17 @@ async function startApp() {
     },
   });
 
-  measurements = initMeasurements({
-    components,
-    world,
-    ui,
-    onActiveToolChanged: (toolName) => {
-      activeMeasurementTool = toolName;
-    },
-  });
-
   selection = initSelection({
     components,
     world,
     fragments,
     ui,
+    onSelectionChanged: updateSelectionControls,
+    afterVisibilityChanged: () => applyRemovedItemsVisibility(),
 
     // Prevent selection/highlight changes while the model is temporarily dressed
-    // for PDF export or while a measurement tool is taking pointer input.
-    canSelect: () => !isPdfExporting && !activeMeasurementTool,
+    // for PDF export.
+    canSelect: () => !isPdfExporting,
   });
 
   await initClipping({
@@ -230,6 +231,9 @@ async function startApp() {
   };
 
   renderStagingUI();
+  updateGridToggleState();
+  updateSelectionControls();
+  updateRemovedItemsControls();
 }
 
 await startApp();
@@ -254,6 +258,7 @@ ui.loadButton.addEventListener("click", async () => {
     return;
   }
 
+  clearRemovedItems();
   await resetViewerVisualState();
 
   setStatus(`Loaded new IFC: ${file.name}`);
@@ -277,6 +282,12 @@ async function loadIfcFileIntoViewer(file) {
       file,
       updateLoadingProgress
     );
+    ifcGridLayer.setMetadata(
+      currentModel.userData.keyPlanMetadata
+    );
+    showGrids = false;
+    ifcGridLayer.hide();
+    updateGridToggleState();
 
     await waitForFragmentsReady();
     await resetViewerVisualState();
@@ -303,6 +314,106 @@ async function loadIfcFileIntoViewer(file) {
     hideLoadingOverlay();
   }
 }
+
+ui.toggleGridsButton.addEventListener("click", () => {
+  if (!currentModel) {
+    setStatus("Load an IFC before showing grids.");
+    return;
+  }
+
+  if (!currentModel.userData.keyPlanMetadata?.available) {
+    setStatus("This IFC does not contain usable grid data.");
+    updateGridToggleState();
+    return;
+  }
+
+  showGrids = !showGrids;
+
+  if (showGrids) {
+    ifcGridLayer.show();
+    setStatus("IFC grids shown.");
+  } else {
+    ifcGridLayer.hide();
+    setStatus("IFC grids hidden.");
+  }
+
+  updateGridToggleState();
+});
+
+ui.removeSelectedButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before removing elements.");
+    return;
+  }
+
+  const currentSelection = selection.getSelectedItem();
+
+  if (isModelIdMapEmpty(currentSelection)) {
+    setStatus("Select elements before removing them from the project.");
+    updateSelectionControls();
+    return;
+  }
+
+  const selectedCount = countItemsInModelIdMap(currentSelection);
+  const confirmed = window.confirm(
+    `Remove ${selectedCount} selected element(s) from this sequencing project?\n\nThe original IFC file will not be modified, and you can restore removed elements later.`
+  );
+
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+    const allGeometryItems = await getAllGeometryItems();
+    const { resolved } = await resolveSelectionToGeometryItems(
+      currentSelection,
+      allGeometryItems
+    );
+    const itemsToRemove = isModelIdMapEmpty(resolved)
+      ? cloneModelIdMap(currentSelection)
+      : resolved;
+
+    removedItems = mergeModelIdMaps(removedItems, itemsToRemove);
+
+    await selection.clearSelection();
+    await applyRemovedItemsVisibility();
+    await showCurrentSliderStage();
+
+    updateSelectionControls();
+    updateRemovedItemsControls();
+
+    setStatus(
+      `Removed ${countItemsInModelIdMap(itemsToRemove)} element(s) from this sequencing project. The original IFC was not modified.`
+    );
+  } catch (error) {
+    console.error("Remove selected failed:", error);
+    setStatus("Failed to remove selected elements from the project.");
+  }
+});
+
+ui.restoreRemovedButton.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before restoring elements.");
+    return;
+  }
+
+  if (isModelIdMapEmpty(removedItems)) {
+    setStatus("No removed elements to restore.");
+    updateRemovedItemsControls();
+    return;
+  }
+
+  removedItems = {};
+
+  try {
+    await showCurrentSliderStage();
+    updateRemovedItemsControls();
+    setStatus("Restored removed elements to this sequencing project.");
+  } catch (error) {
+    console.error("Restore removed failed:", error);
+    setStatus("Removed elements were restored, but the viewer did not refresh.");
+  }
+});
 
 // -----------------------------------------------------------------------------
 // Stage controls
@@ -682,7 +793,10 @@ ui.saveProjectButton.addEventListener("click", async () => {
   }
 
   try {
-    const stagingSnapshot = staging.createSnapshot();
+    const stagingSnapshot = {
+      ...staging.createSnapshot(),
+      removedItems: modelIdMapToSerializable(removedItems),
+    };
     console.log("Staging snapshot:", stagingSnapshot);
 
     const projectName = currentIfcFile.name.replace(/\.ifc$/i, "");
@@ -743,6 +857,10 @@ ui.projectFileInput.addEventListener("change", async () => {
 
     await waitForFragmentsReady();
     await resetViewerVisualState();
+    setRemovedItemsFromSerializable(
+      projectData.stagingSnapshot?.removedItems
+    );
+    await applyRemovedItemsVisibility();
 
     console.log("8. About to restore staging snapshot");
 
@@ -760,6 +878,7 @@ ui.projectFileInput.addEventListener("change", async () => {
     }
 
     renderStagingUI();
+    updateRemovedItemsControls();
     enterSequencingMode();
 
     const didSetSlider = setSliderToStageId(
@@ -866,6 +985,7 @@ async function resetViewerVisualState() {
   const hider = components.get(OBC.Hider);
 
   await hider.set(true);
+  await applyRemovedItemsVisibility({ hider, update: false });
 
   await fragments.resetHighlight();
 
@@ -917,6 +1037,12 @@ async function resetPdfExportFragmentStyles(
     world: worldOverride,
     renderer: worldOverride?.renderer,
     reason,
+  });
+
+  await applyRemovedItemsVisibility({
+    hider,
+    fragmentsManager,
+    update: true,
   });
 
   logPdfExportBreadcrumb(
@@ -1033,6 +1159,128 @@ function isModelIdMapEmpty(modelIdMap) {
   return true;
 }
 
+function cloneModelIdMap(modelIdMap) {
+  const clone = {};
+
+  for (const [modelId, localIds] of Object.entries(modelIdMap ?? {})) {
+    clone[modelId] = new Set(localIds ?? []);
+
+    if (clone[modelId].size === 0) {
+      delete clone[modelId];
+    }
+  }
+
+  return clone;
+}
+
+function modelIdMapToSerializable(modelIdMap) {
+  const serializable = {};
+
+  for (const [modelId, localIds] of Object.entries(modelIdMap ?? {})) {
+    const ids = [...(localIds ?? [])];
+
+    if (ids.length > 0) {
+      serializable[modelId] = ids;
+    }
+  }
+
+  return serializable;
+}
+
+function serializableToModelIdMap(serializableMap) {
+  const modelIdMap = {};
+
+  for (const [modelId, localIds] of Object.entries(serializableMap ?? {})) {
+    const ids = Array.isArray(localIds) ? localIds : [];
+
+    if (ids.length > 0) {
+      modelIdMap[modelId] = new Set(ids);
+    }
+  }
+
+  return modelIdMap;
+}
+
+function setRemovedItemsFromSerializable(serializableMap) {
+  removedItems = serializableToModelIdMap(serializableMap);
+  updateRemovedItemsControls();
+}
+
+function clearRemovedItems() {
+  removedItems = {};
+  updateRemovedItemsControls();
+}
+
+async function applyRemovedItemsVisibility({
+  hider: hiderOverride = null,
+  fragmentsManager = fragments,
+  update = true,
+} = {}) {
+  if (isModelIdMapEmpty(removedItems)) {
+    if (update) {
+      await fragmentsManager?.core?.update?.(true);
+    }
+    return;
+  }
+
+  const hider = hiderOverride ?? components?.get?.(OBC.Hider);
+
+  if (!hider?.set) {
+    return;
+  }
+
+  await hider.set(false, removedItems);
+
+  if (update) {
+    await fragmentsManager?.core?.update?.(true);
+  }
+}
+
+function updateSelectionControls(currentSelection = selection?.getSelectedItem?.()) {
+  if (!ui.removeSelectedButton) return;
+
+  ui.removeSelectedButton.disabled =
+    isPdfExporting || isModelIdMapEmpty(currentSelection);
+}
+
+function updateRemovedItemsControls() {
+  if (!ui.restoreRemovedButton) return;
+
+  const removedCount = countItemsInModelIdMap(removedItems);
+
+  ui.restoreRemovedButton.disabled = isPdfExporting || removedCount === 0;
+  ui.restoreRemovedButton.textContent =
+    removedCount > 0 ? `Restore Removed (${removedCount})` : "Restore Removed";
+}
+
+function updateGridToggleState() {
+  if (!ui.toggleGridsButton) return;
+
+  const hasLoadedModel = Boolean(currentModel);
+  const hasGridData =
+    currentModel?.userData?.keyPlanMetadata?.available === true;
+  const label = showGrids ? "Hide Grids" : "Show Grids";
+  const labelElement = ui.toggleGridsButton.querySelector("span:last-child");
+
+  if (labelElement) {
+    labelElement.textContent = label;
+  } else {
+    ui.toggleGridsButton.textContent = label;
+  }
+
+  ui.toggleGridsButton.setAttribute(
+    "aria-pressed",
+    showGrids ? "true" : "false"
+  );
+  ui.toggleGridsButton.disabled = !hasLoadedModel || !hasGridData;
+  ui.toggleGridsButton.title = !hasLoadedModel
+    ? "Load an IFC before showing grids"
+    : hasGridData
+      ? ""
+      : "This IFC does not contain usable grid data";
+  ui.toggleGridsButton.classList.toggle("is-active", showGrids);
+}
+
 function isFragmentsMemoryOverflow(error) {
   return getErrorMessage(error).includes("Fragments: Memory overflow");
 }
@@ -1109,6 +1357,12 @@ async function getAllGeometryItems(fragmentsManager = fragments) {
   }
 
   return allItems;
+}
+
+async function getProjectGeometryItems(fragmentsManager = fragments) {
+  const allGeometryItems = await getAllGeometryItems(fragmentsManager);
+
+  return subtractModelIdMap(allGeometryItems, removedItems);
 }
 
 function extractRelatedIds(value, bucket = new Set()) {
@@ -1696,7 +1950,7 @@ function createPdfExportBuckets({
 }
 
 async function buildPdfExportBuckets(stageId, fragmentsManager = fragments) {
-  const allGeometryItems = await getAllGeometryItems(fragmentsManager);
+  const allGeometryItems = await getProjectGeometryItems(fragmentsManager);
 
   const rawCurrentItems = staging.getStageSelection(stageId);
   const rawPreviousItems = getPreviousStageItems(stageId);
@@ -1732,7 +1986,7 @@ async function buildPdfExportBuckets(stageId, fragmentsManager = fragments) {
 }
 
 async function buildPdfExportPlan(stages, fragmentsManager = fragments) {
-  const allGeometryItems = await getAllGeometryItems(fragmentsManager);
+  const allGeometryItems = await getProjectGeometryItems(fragmentsManager);
   const resolvedStageItems = new Map();
   const unresolvedStageItems = new Map();
 
@@ -2258,6 +2512,7 @@ async function renderPdfExportOverrideMaterialFrame({
 
   try {
     await hider.set(true);
+    await applyRemovedItemsVisibility({ hider, fragmentsManager, update: false });
     await fragmentsManager.core.update(true);
     await waitForAnimationFrames(1);
 
@@ -2279,6 +2534,11 @@ async function renderPdfExportOverrideMaterialFrame({
 
     if (hasHighlightItems) {
       await hider.isolate(visualState.highlightItems);
+      await applyRemovedItemsVisibility({
+        hider,
+        fragmentsManager,
+        update: false,
+      });
       await fragmentsManager.core.update(true);
       await waitForAnimationFrames(1);
     }
@@ -2362,6 +2622,7 @@ async function applyPdfExportVisualState(
   });
 
   await hider.set(true);
+  await applyRemovedItemsVisibility({ hider, fragmentsManager, update: false });
   await applyPdfExportBucketStyles({
     context,
     stage,
@@ -2455,7 +2716,10 @@ async function showCurrentSliderStage() {
 
   staging.setViewMode("cumulative");
 
-  const itemsToShow = staging.getActiveStageSelection();
+  const itemsToShow = subtractModelIdMap(
+    staging.getActiveStageSelection() ?? {},
+    removedItems
+  );
 
   console.log("showCurrentSliderStage mode:", mode);
   console.log("showCurrentSliderStage stage:", stage);
@@ -2486,6 +2750,7 @@ async function showCurrentSliderStage() {
       console.log("About to isolate items:", itemsToShow);
 
       await hider.isolate(itemsToShow);
+      await applyRemovedItemsVisibility({ hider, update: false });
       await fragments.core.update(true);
       await updateLiftLabelsForCurrentView();
 
@@ -2495,8 +2760,9 @@ async function showCurrentSliderStage() {
     }
 
     await hider.set(true);
+    await applyRemovedItemsVisibility({ hider, update: false });
 
-    const allItems = await getAllGeometryItems();
+    const allItems = await getProjectGeometryItems();
     const contextItems = subtractModelIdMap(allItems, itemsToShow);
 
     const opacityApplied = await setOpacityForItems(contextItems, 0.15);
@@ -2652,7 +2918,7 @@ function mergeAllStageItems() {
     }
   }
 
-  return merged;
+  return subtractModelIdMap(merged, removedItems);
 }
 
 // -----------------------------------------------------------------------------
@@ -3252,6 +3518,7 @@ async function captureStageSheetData(
   );
 
   await hider.set(true);
+  await applyRemovedItemsVisibility({ hider, fragmentsManager, update: false });
   await resetPdfExportFragmentStyles(context, "before PDF context image capture", {
     fragmentsManager,
     worldOverride,
@@ -3296,6 +3563,7 @@ async function captureStageSheetData(
   } else {
     await hider.isolate(foregroundItems);
   }
+  await applyRemovedItemsVisibility({ hider, fragmentsManager, update: false });
 
   await waitForStableExportFrame({
     frames: PDF_EXPORT_SETTLE_FRAMES,
@@ -3329,6 +3597,34 @@ async function captureStageSheetData(
     transparentForeground
   );
 
+  const keyPlanImageDataUrl = await generateStageKeyPlanImage({
+    stage,
+    buckets,
+    currentModel,
+    fragments: fragmentsManager,
+    world: worldOverride,
+    hider,
+    capturePng: captureViewerPng,
+    makeGreyContextImage,
+    makeWhiteTransparent,
+    compositeImages,
+    captureElement,
+    foregroundItems,
+    applyRemovedVisibility: () =>
+      applyRemovedItemsVisibility({
+        hider,
+        fragmentsManager,
+        update: false,
+      }),
+    waitForStableFrame: () =>
+      waitForStableExportFrame({
+        frames: PDF_EXPORT_SETTLE_FRAMES,
+        fragmentsManager,
+        worldOverride,
+      }),
+    context,
+  });
+
   logPdfExportBreadcrumb(context, "Composited layered PDF export image.", {
     stageId: stage.id,
     stageName: stage.name,
@@ -3354,6 +3650,7 @@ async function captureStageSheetData(
     sheetTitle: "CONSTRUCTION SEQUENCING",
     clientName: "CLIENT NAME",
     drawingNumber,
+    keyPlanImageDataUrl,
   };
 }
 
@@ -3364,6 +3661,8 @@ async function exportCurrentStagePdf(stage) {
   }
 
   isPdfExporting = true;
+  updateSelectionControls();
+  updateRemovedItemsControls();
 
   const previousState = captureCurrentViewerStateForExportRestore();
   const exportContext = createPdfExportContext("single-stage", [stage]);
@@ -3430,6 +3729,8 @@ async function exportCurrentStagePdf(stage) {
       setStatus("PDF export finished, but viewer restore failed.");
     } finally {
       isPdfExporting = false;
+      updateSelectionControls();
+      updateRemovedItemsControls();
     }
   }
 }
@@ -3452,6 +3753,8 @@ async function exportAllStagesPdf() {
   }
 
   isPdfExporting = true;
+  updateSelectionControls();
+  updateRemovedItemsControls();
 
   const previousState = captureCurrentViewerStateForExportRestore();
   const stageSheets = [];
@@ -3576,6 +3879,8 @@ async function exportAllStagesPdf() {
       setStatus("Export finished, but viewer restore failed.");
     } finally {
       isPdfExporting = false;
+      updateSelectionControls();
+      updateRemovedItemsControls();
     }
   }
 }
