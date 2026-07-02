@@ -150,6 +150,11 @@ export async function extractIfcGridMetadataFromBuffer({
       grids,
       modelBounds,
     });
+    const gridLevels = createGridLevelSummaries({
+      grids,
+      modelBounds,
+      primaryGridLevel,
+    });
 
     if (primaryGridLevel) {
       console.log(`${LOG_PREFIX} Primary grid level selected`, {
@@ -165,8 +170,10 @@ export async function extractIfcGridMetadataFromBuffer({
       available: grids.length > 0,
       grids,
       modelBounds,
+      gridLevels,
       primaryGridLevel: primaryGridLevel
         ? {
+            levelId: primaryGridLevel.levelId,
             elevation: primaryGridLevel.elevation,
             gridIds: primaryGridLevel.gridIds,
             gridNames: primaryGridLevel.gridNames,
@@ -217,6 +224,53 @@ export async function extractIfcGridMetadataFromBuffer({
   }
 }
 
+export function refreshIfcGridPrimaryLevelForModel(
+  metadata,
+  fragmentModel = null
+) {
+  if (!metadata?.available || !Array.isArray(metadata.grids)) {
+    return metadata;
+  }
+
+  const modelBounds = getModelBounds(fragmentModel) ?? metadata.modelBounds;
+  const primaryGridLevel = selectPrimaryGridLevel({
+    grids: metadata.grids,
+    modelBounds,
+  });
+  const gridLevels = createGridLevelSummaries({
+    grids: metadata.grids,
+    modelBounds,
+    primaryGridLevel,
+  });
+
+  if (primaryGridLevel) {
+    console.log(`${LOG_PREFIX} Primary grid level selected`, {
+      elevation: primaryGridLevel.elevation,
+      gridIds: primaryGridLevel.gridIds,
+      gridNames: primaryGridLevel.gridNames,
+      intersectingAxisCount: primaryGridLevel.intersectingAxisCount,
+      usedFallback: primaryGridLevel.usedFallback,
+    });
+  }
+
+  return {
+    ...metadata,
+    modelBounds,
+    gridLevels,
+    primaryGridLevel: primaryGridLevel
+      ? {
+          levelId: primaryGridLevel.levelId,
+          elevation: primaryGridLevel.elevation,
+          gridIds: primaryGridLevel.gridIds,
+          gridNames: primaryGridLevel.gridNames,
+          intersectingAxisCount:
+            primaryGridLevel.intersectingAxisCount,
+          usedFallback: primaryGridLevel.usedFallback,
+        }
+      : null,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /*                          PUBLIC: VIEWER OVERLAY                            */
 /* -------------------------------------------------------------------------- */
@@ -262,6 +316,7 @@ export function createIfcGridLayer({
   const gridGroups = new Map();
 
   let metadata = null;
+  let selectedLevelId = null;
 
   function clear() {
     for (const gridGroup of gridGroups.values()) {
@@ -271,6 +326,7 @@ export function createIfcGridLayer({
 
     gridGroups.clear();
     metadata = null;
+    selectedLevelId = null;
 
     renderWorld(world);
   }
@@ -310,11 +366,30 @@ export function createIfcGridLayer({
   }
 
   function show() {
-    return showPrimaryLevel();
+    return showSelectedLevel();
   }
 
   function showPrimaryLevel() {
-    const primaryGridIds = metadata?.primaryGridLevel?.gridIds;
+    selectedLevelId = null;
+
+    return showLevel(metadata?.primaryGridLevel);
+  }
+
+  function showSelectedLevel() {
+    const selectedLevel = getSelectedGridLevel();
+
+    return showLevel(selectedLevel ?? metadata?.primaryGridLevel);
+  }
+
+  function showLevel(levelOrGridIds) {
+    const level = Array.isArray(levelOrGridIds)
+      ? {
+          gridIds: levelOrGridIds,
+          elevation: null,
+          gridNames: [],
+        }
+      : levelOrGridIds;
+    const primaryGridIds = level?.gridIds;
     const selectedGridIds = createGridIdSet(primaryGridIds);
     const canUsePrimarySelection = selectedGridIds.size > 0;
 
@@ -352,7 +427,8 @@ export function createIfcGridLayer({
 
     return {
       rootVisible: true,
-      selectedElevation: metadata?.primaryGridLevel?.elevation ?? null,
+      selectedLevelId: level?.levelId ?? selectedLevelId ?? null,
+      selectedElevation: level?.elevation ?? null,
       selectedGridCount: selectedGroups.length,
       selectedGridNames: selectedGroups.map(
         (group) => group.userData.gridName
@@ -373,7 +449,25 @@ export function createIfcGridLayer({
       return hide();
     }
 
-    return showPrimaryLevel();
+    return showSelectedLevel();
+  }
+
+  function showLevelById(levelId) {
+    setSelectedLevel(levelId);
+
+    return showSelectedLevel();
+  }
+
+  function setSelectedLevel(levelId) {
+    const normalisedLevelId = normaliseGridLevelId(levelId);
+    const availableLevels = getAvailableLevels();
+    const matchingLevel = availableLevels.find(
+      (level) => level.levelId === normalisedLevelId
+    );
+
+    selectedLevelId = matchingLevel?.levelId ?? null;
+
+    return getSelectedGridLevel();
   }
 
   function showOnly(gridNames = []) {
@@ -414,11 +508,35 @@ export function createIfcGridLayer({
     return metadata;
   }
 
+  function getAvailableLevels() {
+    return Array.isArray(metadata?.gridLevels)
+      ? metadata.gridLevels
+      : [];
+  }
+
+  function getSelectedGridLevel() {
+    const availableLevels = getAvailableLevels();
+
+    if (selectedLevelId) {
+      const matchingLevel = availableLevels.find(
+        (level) => level.levelId === selectedLevelId
+      );
+
+      if (matchingLevel) {
+        return matchingLevel;
+      }
+    }
+
+    return metadata?.primaryGridLevel ?? availableLevels[0] ?? null;
+  }
+
   function getDebugInfo() {
     return {
       rootVisible: root.visible,
       gridGroupCount: gridGroups.size,
       primaryGridLevel: metadata?.primaryGridLevel ?? null,
+      selectedLevelId,
+      selectedGridLevel: getSelectedGridLevel(),
       grids: [...gridGroups.values()].map((group) => ({
         gridId: group.userData.gridId,
         gridName: group.userData.gridName,
@@ -441,12 +559,18 @@ export function createIfcGridLayer({
     setMetadata,
     show,
     showPrimaryLevel,
+    showSelectedLevel,
+    showLevel,
+    showLevelById,
+    setSelectedLevel,
     hide,
     toggle,
     showOnly,
     setColor,
     setOpacity,
     getMetadata,
+    getAvailableLevels,
+    getSelectedGridLevel,
     getDebugInfo,
     dispose,
   };
@@ -1134,6 +1258,7 @@ export function selectPrimaryGridLevel({
     return null;
   }
 
+  const hasModelPlanBounds = Boolean(expandPlanBounds(modelBounds));
   const clusters = clusterGridsByElevation(usableGrids).map((cluster) => {
     const intersectingAxisCount = countIntersectingAxesForCluster({
       cluster,
@@ -1148,8 +1273,11 @@ export function selectPrimaryGridLevel({
   });
 
   const relevantClusters = clusters.filter((cluster) => cluster.relevant);
-  const candidateClusters =
-    relevantClusters.length > 0 ? relevantClusters : clusters;
+  const candidateClusters = relevantClusters.length > 0
+    ? relevantClusters
+    : hasModelPlanBounds
+      ? clusters
+      : getHighestAxisCountClusters(clusters);
   const usedFallback = relevantClusters.length === 0;
 
   const selectedCluster = [...candidateClusters].sort((a, b) => {
@@ -1167,6 +1295,7 @@ export function selectPrimaryGridLevel({
   }
 
   return {
+    levelId: createGridLevelId(selectedCluster.elevation),
     elevation: selectedCluster.elevation,
     grids: selectedCluster.grids,
     gridIds: selectedCluster.grids.map((grid) => grid.gridId),
@@ -1174,6 +1303,41 @@ export function selectPrimaryGridLevel({
     intersectingAxisCount: selectedCluster.intersectingAxisCount,
     usedFallback,
   };
+}
+
+function createGridLevelSummaries({
+  grids,
+  modelBounds,
+  primaryGridLevel,
+} = {}) {
+  const primaryLevelId = primaryGridLevel
+    ? primaryGridLevel.levelId ?? createGridLevelId(primaryGridLevel.elevation)
+    : null;
+
+  return clusterGridsByElevation(grids ?? [])
+    .map((cluster) => {
+      const intersectingAxisCount = countIntersectingAxesForCluster({
+        cluster,
+        modelBounds,
+      });
+      const gridNames = cluster.grids.map((grid) => grid.name);
+      const levelId = createGridLevelId(cluster.elevation);
+
+      return {
+        levelId,
+        elevation: cluster.elevation,
+        label: createGridLevelLabel({
+          elevation: cluster.elevation,
+          gridNames,
+        }),
+        gridIds: cluster.grids.map((grid) => grid.gridId),
+        gridNames,
+        axisCount: cluster.axisCount ?? 0,
+        intersectingAxisCount,
+        isPrimary: levelId === primaryLevelId,
+      };
+    })
+    .sort((a, b) => a.elevation - b.elevation);
 }
 
 function clusterGridsByElevation(grids) {
@@ -1194,6 +1358,7 @@ function clusterGridsByElevation(grids) {
       lastCluster.grids.push(grid);
       lastCluster.elevations.push(elevation);
       lastCluster.elevation = averageNumbers(lastCluster.elevations);
+      lastCluster.axisCount += getGridAxisCount(grid);
       continue;
     }
 
@@ -1201,10 +1366,26 @@ function clusterGridsByElevation(grids) {
       elevation,
       elevations: [elevation],
       grids: [grid],
+      axisCount: getGridAxisCount(grid),
     });
   }
 
   return clusters;
+}
+
+function getHighestAxisCountClusters(clusters) {
+  const highestAxisCount = Math.max(
+    0,
+    ...clusters.map((cluster) => cluster.axisCount ?? 0)
+  );
+
+  return clusters.filter(
+    (cluster) => (cluster.axisCount ?? 0) === highestAxisCount
+  );
+}
+
+function getGridAxisCount(grid) {
+  return Array.isArray(grid?.axes) ? grid.axes.length : 0;
 }
 
 function countIntersectingAxesForCluster({
@@ -1305,6 +1486,40 @@ function normaliseElevation(value) {
   const elevation = Number(value);
 
   return Number.isFinite(elevation) ? elevation : 0;
+}
+
+function createGridLevelId(elevation) {
+  return `level:${roundCoordinate(normaliseElevation(elevation))}`;
+}
+
+function normaliseGridLevelId(levelId) {
+  return String(levelId ?? "").trim();
+}
+
+function createGridLevelLabel({
+  elevation,
+  gridNames,
+}) {
+  const uniqueNames = [...new Set(
+    gridNames
+      .map((name) => String(name ?? "").trim())
+      .filter(Boolean)
+  )];
+  const elevationText = formatGridElevation(elevation);
+
+  if (uniqueNames.length === 0) {
+    return `RL ${elevationText}`;
+  }
+
+  if (uniqueNames.length === 1) {
+    return `${uniqueNames[0]} / RL ${elevationText}`;
+  }
+
+  return `${uniqueNames[0]} +${gridNames.length - 1} / RL ${elevationText}`;
+}
+
+function formatGridElevation(elevation) {
+  return `${roundCoordinate(elevation)} m`;
 }
 
 function averageNumbers(values) {

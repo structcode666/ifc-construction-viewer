@@ -33,6 +33,7 @@ export function getUI() {
     clearClippingButton: document.getElementById("clearClippingButton"),
 
     toggleGridsButton: document.getElementById("toggleGridsButton"),
+    gridLevelSelect: document.getElementById("gridLevelSelect"),
 
     saveProjectButton: document.getElementById("saveProjectButton"),
     projectFileInput: document.getElementById("projectFileInput"),

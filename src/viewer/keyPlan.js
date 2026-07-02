@@ -60,6 +60,7 @@ export async function generateStageKeyPlanImage({
   applyRemovedVisibility = async () => {},
 } = {}) {
   const rawMetadata = currentModel?.userData?.keyPlanMetadata ?? {};
+  const selectedGridLevelId = currentModel?.userData?.selectedGridLevelId;
 
   const modelBounds =
     rawMetadata.modelBounds ?? getBoundsFromFragmentModel(currentModel);
@@ -152,6 +153,7 @@ export async function generateStageKeyPlanImage({
       baseImageDataUrl: modelOnlyImage,
       stageName: stage?.name,
       gridMetadata: rawMetadata,
+      selectedGridLevelId,
       planCamera,
     });
 
@@ -432,6 +434,7 @@ async function decorateModelOnlyKeyPlan({
   baseImageDataUrl,
   stageName,
   gridMetadata,
+  selectedGridLevelId,
   planCamera,
 }) {
   const image = await loadImage(baseImageDataUrl);
@@ -453,6 +456,7 @@ async function decorateModelOnlyKeyPlan({
     context,
     canvas,
     gridMetadata,
+    selectedGridLevelId,
     planCamera,
     stageName,
   });
@@ -468,8 +472,9 @@ async function decorateModelOnlyKeyPlan({
   return canvas.toDataURL("image/png");
 }
 
-function getPrimaryGridAxes({
+function getSelectedGridAxes({
   gridMetadata,
+  selectedGridLevelId,
   stageName,
 }) {
   if (!gridMetadata?.available || !Array.isArray(gridMetadata.grids)) {
@@ -487,8 +492,12 @@ function getPrimaryGridAxes({
     };
   }
 
+  const selectedLevel = getGridLevelForSelection({
+    gridMetadata,
+    selectedGridLevelId,
+  });
   const selectedGridIds = new Set(
-    (gridMetadata.primaryGridLevel?.gridIds ?? []).map(normaliseGridId)
+    (selectedLevel?.gridIds ?? []).map(normaliseGridId)
   );
   const selectedGrids = gridMetadata.grids.filter((grid) =>
     selectedGridIds.has(normaliseGridId(grid.gridId))
@@ -502,7 +511,8 @@ function getPrimaryGridAxes({
       `${KEY_PLAN_LOG_PREFIX} Primary grid level contains no usable grids; generating model-only key plan.`,
       {
         stageName,
-        primaryGridLevel: gridMetadata.primaryGridLevel ?? null,
+        selectedGridLevelId,
+        selectedLevel,
       }
     );
 
@@ -515,13 +525,30 @@ function getPrimaryGridAxes({
   return {
     axes: usableSelectedGrids.flatMap((grid) => grid.axes),
     selectedGrids: usableSelectedGrids,
+    selectedLevel,
   };
+}
+
+function getGridLevelForSelection({
+  gridMetadata,
+  selectedGridLevelId,
+}) {
+  const levels = Array.isArray(gridMetadata?.gridLevels)
+    ? gridMetadata.gridLevels
+    : [];
+  const normalisedLevelId = String(selectedGridLevelId ?? "").trim();
+
+  return levels.find((level) => level.levelId === normalisedLevelId)
+    ?? gridMetadata?.primaryGridLevel
+    ?? levels[0]
+    ?? null;
 }
 
 function drawGridOverlayOnCanvas({
   context,
   canvas,
   gridMetadata,
+  selectedGridLevelId,
   planCamera,
   stageName,
 }) {
@@ -532,8 +559,10 @@ function drawGridOverlayOnCanvas({
   const {
     axes,
     selectedGrids,
-  } = getPrimaryGridAxes({
+    selectedLevel,
+  } = getSelectedGridAxes({
     gridMetadata,
+    selectedGridLevelId,
     stageName,
   });
 
@@ -544,14 +573,16 @@ function drawGridOverlayOnCanvas({
   console.log(`${KEY_PLAN_LOG_PREFIX} Grid overlay diagnostics`, {
     stageName,
     selectedGridNames: selectedGrids.map((grid) => grid.name),
-    selectedGridElevation: gridMetadata.primaryGridLevel?.elevation ?? null,
+    selectedGridLevelId: selectedLevel?.levelId ?? null,
+    selectedGridElevation: selectedLevel?.elevation ?? null,
     axisCount: axes.length,
   });
 
   window.__lastKeyPlanGridDebug = {
     stageName,
     selectedGridNames: selectedGrids.map((grid) => grid.name),
-    selectedGridElevation: gridMetadata.primaryGridLevel?.elevation ?? null,
+    selectedGridLevelId: selectedLevel?.levelId ?? null,
+    selectedGridElevation: selectedLevel?.elevation ?? null,
     axes,
   };
 

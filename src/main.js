@@ -23,7 +23,10 @@ import {
 } from "./app/pdfExport.js";
 import * as THREE from "three";
 
-import { createIfcGridLayer } from "./viewer/ifcGridLayer.js";
+import {
+  createIfcGridLayer,
+  refreshIfcGridPrimaryLevelForModel,
+} from "./viewer/ifcGridLayer.js";
 
 const ui = getUI();
 
@@ -66,6 +69,7 @@ let selection = null;
 let mode = "staging";
 let showContext = false;
 let showGrids = false;
+let selectedGridLevelId = null;
 
 let viewpoints = null;
 let liftLabels = null;
@@ -285,6 +289,9 @@ async function loadIfcFileIntoViewer(file) {
     ifcGridLayer.setMetadata(
       currentModel.userData.keyPlanMetadata
     );
+    setSelectedGridLevelId(getPrimaryGridLevelId(), {
+      updateVisibleLayer: false,
+    });
     showGrids = false;
     ifcGridLayer.hide();
     updateGridToggleState();
@@ -292,6 +299,21 @@ async function loadIfcFileIntoViewer(file) {
     await waitForFragmentsReady();
     await resetViewerVisualState();
     await waitForFragmentsReady();
+
+    currentModel.userData.keyPlanMetadata =
+      refreshIfcGridPrimaryLevelForModel(
+        currentModel.userData.keyPlanMetadata,
+        currentModel
+      );
+    window.__keyPlanMetadata = currentModel.userData.keyPlanMetadata;
+    ifcGridLayer.setMetadata(
+      currentModel.userData.keyPlanMetadata
+    );
+    setSelectedGridLevelId(getPrimaryGridLevelId(), {
+      updateVisibleLayer: false,
+    });
+    ifcGridLayer.hide();
+    updateGridToggleState();
 
     ui.saveProjectButton.disabled = false;
 
@@ -330,14 +352,25 @@ ui.toggleGridsButton.addEventListener("click", () => {
   showGrids = !showGrids;
 
   if (showGrids) {
+    ifcGridLayer.setSelectedLevel(selectedGridLevelId);
     ifcGridLayer.show();
-    setStatus("IFC grids shown.");
+    setStatus(`IFC grids shown: ${getSelectedGridLevelLabel()}.`);
   } else {
     ifcGridLayer.hide();
     setStatus("IFC grids hidden.");
   }
 
   updateGridToggleState();
+});
+
+ui.gridLevelSelect?.addEventListener("change", () => {
+  setSelectedGridLevelId(ui.gridLevelSelect.value);
+
+  if (showGrids) {
+    setStatus(`IFC grid level shown: ${getSelectedGridLevelLabel()}.`);
+  } else {
+    setStatus(`IFC grid level selected: ${getSelectedGridLevelLabel()}.`);
+  }
 });
 
 ui.removeSelectedButton.addEventListener("click", async () => {
@@ -796,6 +829,7 @@ ui.saveProjectButton.addEventListener("click", async () => {
     const stagingSnapshot = {
       ...staging.createSnapshot(),
       removedItems: modelIdMapToSerializable(removedItems),
+      selectedGridLevelId,
     };
     console.log("Staging snapshot:", stagingSnapshot);
 
@@ -861,6 +895,12 @@ ui.projectFileInput.addEventListener("change", async () => {
       projectData.stagingSnapshot?.removedItems
     );
     await applyRemovedItemsVisibility();
+    setSelectedGridLevelId(
+      projectData.stagingSnapshot?.selectedGridLevelId,
+      {
+        updateVisibleLayer: false,
+      }
+    );
 
     console.log("8. About to restore staging snapshot");
 
@@ -1253,6 +1293,95 @@ function updateRemovedItemsControls() {
     removedCount > 0 ? `Restore Removed (${removedCount})` : "Restore Removed";
 }
 
+function setSelectedGridLevelId(
+  levelId,
+  { updateVisibleLayer = true } = {}
+) {
+  const levels = getGridLevels();
+  const requestedLevelId = String(levelId ?? "").trim();
+  const matchingLevel = levels.find(
+    (level) => level.levelId === requestedLevelId
+  );
+  const fallbackLevel =
+    getPrimaryGridLevel() ?? levels[0] ?? null;
+
+  selectedGridLevelId = matchingLevel?.levelId ?? fallbackLevel?.levelId ?? null;
+
+  if (currentModel?.userData) {
+    currentModel.userData.selectedGridLevelId = selectedGridLevelId;
+  }
+
+  ifcGridLayer?.setSelectedLevel?.(selectedGridLevelId);
+  updateGridLevelOptions();
+
+  if (showGrids && updateVisibleLayer) {
+    ifcGridLayer?.show?.();
+  }
+
+  return getSelectedGridLevel();
+}
+
+function getGridLevels() {
+  return Array.isArray(currentModel?.userData?.keyPlanMetadata?.gridLevels)
+    ? currentModel.userData.keyPlanMetadata.gridLevels
+    : [];
+}
+
+function getPrimaryGridLevel() {
+  const primaryLevelId =
+    currentModel?.userData?.keyPlanMetadata?.primaryGridLevel?.levelId;
+
+  return getGridLevels().find(
+    (level) => level.levelId === primaryLevelId
+  ) ?? null;
+}
+
+function getPrimaryGridLevelId() {
+  return getPrimaryGridLevel()?.levelId ?? null;
+}
+
+function getSelectedGridLevel() {
+  return getGridLevels().find(
+    (level) => level.levelId === selectedGridLevelId
+  ) ?? getPrimaryGridLevel();
+}
+
+function getSelectedGridLevelLabel() {
+  return getSelectedGridLevel()?.label ?? "primary grid level";
+}
+
+function updateGridLevelOptions() {
+  if (!ui.gridLevelSelect) return;
+
+  const levels = getGridLevels();
+
+  ui.gridLevelSelect.replaceChildren();
+
+  if (levels.length === 0) {
+    ui.gridLevelSelect.append(
+      new Option("Primary grid level", "")
+    );
+    ui.gridLevelSelect.value = "";
+    ui.gridLevelSelect.disabled = true;
+    return;
+  }
+
+  for (const level of levels) {
+    const option = new Option(
+      level.isPrimary ? `${level.label} (Primary)` : level.label,
+      level.levelId
+    );
+
+    ui.gridLevelSelect.append(option);
+  }
+
+  const activeLevel = getSelectedGridLevel() ?? levels[0];
+
+  ui.gridLevelSelect.value = activeLevel?.levelId ?? "";
+  ui.gridLevelSelect.disabled = !currentModel?.userData?.keyPlanMetadata
+    ?.available;
+}
+
 function updateGridToggleState() {
   if (!ui.toggleGridsButton) return;
 
@@ -1279,6 +1408,8 @@ function updateGridToggleState() {
       ? ""
       : "This IFC does not contain usable grid data";
   ui.toggleGridsButton.classList.toggle("is-active", showGrids);
+
+  updateGridLevelOptions();
 }
 
 function isFragmentsMemoryOverflow(error) {
