@@ -6,12 +6,14 @@ const CONCRETE_OPACITY = 0.36;
 const MIN_FOOTPRINT_SIZE = 0.1;
 const MIN_POINTER_DRAG_PX = 6;
 const HANDLE_SIZE = 0.32;
+const MOVE_HANDLE_LENGTH = 1.2;
 
 export function createManualElementManager({
   world,
   container,
   getDefaultHeight = () => 3,
   onSelectionChanged = () => {},
+  onBeforeChange = () => {},
   onElementChanged = () => {},
   onStatus = () => {},
 }) {
@@ -57,12 +59,17 @@ export function createManualElementManager({
   const elements = new Map();
   const selectedIds = new Set();
   const resizeHandles = [];
+  const moveHandles = [];
+  const snapMarker = createSnapMarker();
   let drawEnabled = false;
+  let snapEnabled = false;
   let drawing = null;
   let pointerDown = null;
   let moving = null;
   let resizing = null;
 
+  group.add(snapMarker);
+  createMoveHandles();
   createResizeHandles();
 
   function requestRender() {
@@ -184,6 +191,8 @@ export function createManualElementManager({
   }
 
   function createElementFromFootprint(start, end, height = getElementHeight()) {
+    onBeforeChange("create concrete");
+
     const { center, size } = getBoxFromFootprint(start, end, height);
     const id = `manual-${crypto.randomUUID()}`;
     const geometry = new THREE.BoxGeometry(size.x, size.y, size.z);
@@ -338,6 +347,19 @@ export function createManualElementManager({
     return hits[0]?.object ?? null;
   }
 
+  function pickMoveHandle(event) {
+    setPointerFromEvent(event);
+
+    const hits = raycaster.intersectObjects(moveHandles, true);
+    const handle = hits[0]?.object;
+
+    return handle?.userData?.moveHandle
+      ? handle
+      : handle?.parent?.userData?.moveHandle
+        ? handle.parent
+        : null;
+  }
+
   function pickElement(event) {
     setPointerFromEvent(event);
 
@@ -384,9 +406,118 @@ export function createManualElementManager({
     }
   }
 
+  function createMoveHandles() {
+    const configs = [
+      {
+        axis: "x",
+        label: "X",
+        direction: new THREE.Vector3(1, 0, 0),
+        color: "#ef4444",
+      },
+      {
+        axis: "y",
+        label: "Y",
+        direction: new THREE.Vector3(0, 1, 0),
+        color: "#22c55e",
+      },
+      {
+        axis: "z",
+        label: "Z",
+        direction: new THREE.Vector3(0, 0, 1),
+        color: "#3b82f6",
+      },
+    ];
+
+    for (const config of configs) {
+      const material = new THREE.MeshBasicMaterial({
+        color: config.color,
+        transparent: true,
+        opacity: 0.96,
+        depthTest: false,
+      });
+      const handle = new THREE.Group();
+      const shaft = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.035, 0.035, MOVE_HANDLE_LENGTH, 12),
+        material.clone()
+      );
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(0.13, 0.36, 18),
+        material.clone()
+      );
+      const label = createAxisLabel(config.label, config.color);
+
+      shaft.position.y = MOVE_HANDLE_LENGTH / 2;
+      cone.position.y = MOVE_HANDLE_LENGTH + 0.18;
+      label.position.y = MOVE_HANDLE_LENGTH + 0.56;
+
+      handle.add(shaft, cone, label);
+      handle.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        config.direction
+      );
+      handle.name = `Concrete move ${config.axis.toUpperCase()}`;
+      handle.userData.moveHandle = config;
+      handle.visible = false;
+
+      moveHandles.push(handle);
+      group.add(handle);
+    }
+  }
+
+  function createAxisLabel(text, color) {
+    const canvas = document.createElement("canvas");
+    canvas.width = 96;
+    canvas.height = 96;
+    const context = canvas.getContext("2d");
+
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.fillStyle = color;
+    context.beginPath();
+    context.arc(48, 48, 34, 0, Math.PI * 2);
+    context.fill();
+    context.fillStyle = "#ffffff";
+    context.font = "700 42px Arial";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillText(text, 48, 50);
+
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+
+    const material = new THREE.SpriteMaterial({
+      map: texture,
+      transparent: true,
+      depthTest: false,
+    });
+    const sprite = new THREE.Sprite(material);
+    sprite.scale.set(0.42, 0.42, 0.42);
+    sprite.userData.isAxisLabel = true;
+
+    return sprite;
+  }
+
+  function createSnapMarker() {
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.12, 16, 16),
+      new THREE.MeshBasicMaterial({
+        color: "#facc15",
+        transparent: true,
+        opacity: 0.9,
+        depthTest: false,
+      })
+    );
+    marker.name = "Concrete snap marker";
+    marker.visible = false;
+
+    return marker;
+  }
+
   function updateResizeHandles(element) {
     if (!element || !element.mesh.visible) {
       for (const handle of resizeHandles) {
+        handle.visible = false;
+      }
+      for (const handle of moveHandles) {
         handle.visible = false;
       }
       return;
@@ -430,6 +561,19 @@ export function createManualElementManager({
     for (const handle of resizeHandles) {
       const { axis, sign } = handle.userData.resizeHandle;
       handle.position.copy(positions[`${axis}:${sign}`]);
+      handle.visible = true;
+    }
+
+    for (const handle of moveHandles) {
+      const { axis, direction } = handle.userData.moveHandle;
+      const offset =
+        axis === "x"
+          ? size.x / 2 + HANDLE_SIZE * 2.5
+          : axis === "y"
+            ? size.y / 2 + HANDLE_SIZE * 2.5
+            : size.z / 2 + HANDLE_SIZE * 2.5;
+
+      handle.position.copy(center).add(direction.clone().multiplyScalar(offset));
       handle.visible = true;
     }
   }
@@ -585,6 +729,15 @@ export function createManualElementManager({
     container.classList.toggle("is-drawing-concrete", drawEnabled);
   }
 
+  function setSnapEnabled(enabled) {
+    snapEnabled = Boolean(enabled);
+
+    if (!snapEnabled) {
+      snapMarker.visible = false;
+      requestRender();
+    }
+  }
+
   function isPointerInteractionActive() {
     return drawEnabled || Boolean(drawing) || Boolean(moving) || Boolean(resizing);
   }
@@ -613,15 +766,31 @@ export function createManualElementManager({
     return raycaster.ray.intersectPlane(plane, target);
   }
 
-  function startMoving(event, elementId) {
+  function startMoving(event, elementId, moveHandle = null) {
     const element = elements.get(elementId);
-    const point = getGroundPoint(event, new THREE.Vector3());
+    const axisConfig = moveHandle?.userData?.moveHandle ?? null;
+    const axisVector = axisConfig?.direction?.clone?.() ?? null;
+    const plane = axisVector
+      ? new THREE.Plane().setFromNormalAndCoplanarPoint(
+          createAxisDragPlane(axisVector),
+          moveHandle.position
+        )
+      : groundPlane;
+    const point = axisVector
+      ? getPointOnPlane(event, plane, new THREE.Vector3())
+      : getGroundPoint(event, new THREE.Vector3());
 
     if (!element || !point) return false;
+
+    onBeforeChange("move concrete");
 
     moving = {
       pointerId: event.pointerId,
       element,
+      axis: axisConfig?.axis ?? null,
+      axisLabel: axisConfig?.label ?? null,
+      axisVector,
+      plane,
       startPoint: point.clone(),
       startPosition: element.mesh.position.clone(),
     };
@@ -629,6 +798,7 @@ export function createManualElementManager({
     container.setPointerCapture(event.pointerId);
     world.camera.setUserInput(false);
     container.classList.add("is-moving-concrete");
+    container.classList.toggle("is-axis-moving-concrete", Boolean(axisVector));
 
     return true;
   }
@@ -636,21 +806,88 @@ export function createManualElementManager({
   function updateMoving(event) {
     if (!moving || event.pointerId !== moving.pointerId) return;
 
-    const point = getGroundPoint(event, new THREE.Vector3());
+    const point = moving.axisVector
+      ? getPointOnPlane(event, moving.plane, new THREE.Vector3())
+      : getGroundPoint(event, new THREE.Vector3());
     if (!point) return;
 
     const delta = point.clone().sub(moving.startPoint);
-    moving.element.mesh.position.set(
-      moving.startPosition.x + delta.x,
-      moving.startPosition.y,
-      moving.startPosition.z + delta.z
-    );
+    const nextPosition = moving.startPosition.clone();
+
+    if (moving.axisVector && moving.axis) {
+      nextPosition[moving.axis] =
+        moving.startPosition[moving.axis] + delta.dot(moving.axisVector);
+    } else {
+      nextPosition.x = moving.startPosition.x + delta.x;
+      nextPosition.z = moving.startPosition.z + delta.z;
+    }
+
+    applySnapToMovingPosition(event, nextPosition, delta);
+    moving.element.mesh.position.copy(nextPosition);
     moving.element.position = vectorToPlain(moving.element.mesh.position);
     updateResizeHandles(moving.element);
     requestRender();
 
     event.preventDefault();
     event.stopImmediatePropagation();
+  }
+
+  function applySnapToMovingPosition(event, nextPosition, delta) {
+    if (!snapEnabled) {
+      snapMarker.visible = false;
+      return;
+    }
+
+    const hit = getSnapHit(event);
+
+    if (!hit) {
+      snapMarker.visible = false;
+      return;
+    }
+
+    const size = plainToVector(moving.element.size, new THREE.Vector3(1, 1, 1));
+
+    if (moving.axis) {
+      const axis = moving.axis;
+      const sign = Math.sign(delta.dot(moving.axisVector)) || 1;
+      nextPosition[axis] = hit.point[axis] - sign * (size[axis] / 2);
+    } else {
+      nextPosition.x = hit.point.x;
+      nextPosition.y = hit.point.y + size.y / 2;
+      nextPosition.z = hit.point.z;
+    }
+
+    snapMarker.position.copy(hit.point);
+    snapMarker.visible = true;
+  }
+
+  function getSnapHit(event) {
+    setPointerFromEvent(event);
+
+    const candidates = [];
+
+    world.scene.three.traverse((object) => {
+      if (!object.visible || !object.isMesh) return;
+      if (isDescendantOf(object, group)) return;
+      candidates.push(object);
+    });
+
+    if (candidates.length === 0) return null;
+
+    const hits = raycaster.intersectObjects(candidates, false);
+
+    return hits[0] ?? null;
+  }
+
+  function isDescendantOf(object, parent) {
+    let current = object;
+
+    while (current) {
+      if (current === parent) return true;
+      current = current.parent;
+    }
+
+    return false;
   }
 
   function finishMoving(event) {
@@ -660,6 +897,8 @@ export function createManualElementManager({
     moving = null;
     world.camera.setUserInput(true);
     container.classList.remove("is-moving-concrete");
+    container.classList.remove("is-axis-moving-concrete");
+    snapMarker.visible = false;
 
     if (container.hasPointerCapture(event.pointerId)) {
       container.releasePointerCapture(event.pointerId);
@@ -690,6 +929,8 @@ export function createManualElementManager({
     const startPoint = getPointOnPlane(event, plane, new THREE.Vector3());
 
     if (!startPoint) return false;
+
+    onBeforeChange("resize concrete");
 
     resizing = {
       pointerId: event.pointerId,
@@ -785,6 +1026,26 @@ export function createManualElementManager({
     };
 
     if (!drawEnabled) {
+      const pickedMoveHandle = pickMoveHandle(event);
+
+      if (pickedMoveHandle) {
+        const selectedElement = getFirstSelectedElement();
+
+        if (
+          selectedElement &&
+          startMoving(event, selectedElement.id, pickedMoveHandle)
+        ) {
+          const axis = pickedMoveHandle.userData.moveHandle.label;
+          onStatus(
+            `Moving concrete on ${axis} axis${snapEnabled ? " with snap on" : ""}.`
+          );
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+
+        return;
+      }
+
       const pickedHandle = pickResizeHandle(event);
 
       if (pickedHandle && startResizing(event, pickedHandle)) {
@@ -800,7 +1061,9 @@ export function createManualElementManager({
       selectIds([pickedId]);
 
       if (startMoving(event, pickedId)) {
-        onStatus("Concrete element selected. Drag to move or use arrows to resize.");
+        onStatus(
+          `Concrete element selected. Drag to move on plan, or use X/Y/Z arrows for axis moves${snapEnabled ? " with snap on" : ""}.`
+        );
         event.preventDefault();
         event.stopImmediatePropagation();
       }
@@ -935,6 +1198,8 @@ export function createManualElementManager({
   return {
     setDrawEnabled,
     isDrawEnabled: () => drawEnabled,
+    setSnapEnabled,
+    isSnapEnabled: () => snapEnabled,
     isPointerInteractionActive,
     clearSelection,
     deleteSelected,

@@ -39,6 +39,7 @@ export function getUI() {
     drawConcreteButton: document.getElementById("drawConcreteButton"),
     concreteHeightInput: document.getElementById("concreteHeightInput"),
     deleteConcreteButton: document.getElementById("deleteConcreteButton"),
+    snapConcreteButton: document.getElementById("snapConcreteButton"),
 
     saveProjectButton: document.getElementById("saveProjectButton"),
     projectFileInput: document.getElementById("projectFileInput"),

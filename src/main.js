@@ -81,6 +81,10 @@ let pdfExportRunNumber = 0;
 let ifcGridLayer = null;
 let removedItems = {};
 let manualElements = null;
+let undoStack = [];
+let isRestoringUndo = false;
+
+const MAX_UNDO_STEPS = 50;
 
 const staging = createStagingManager();
 
@@ -191,6 +195,7 @@ async function startApp() {
     container: ui.viewerContainer,
     getDefaultHeight: () => Number(ui.concreteHeightInput?.value ?? 3),
     onSelectionChanged: () => updateSelectionControls(),
+    onBeforeChange: (label) => pushUndoSnapshot(label),
     onElementChanged: () => renderStagingUI(),
     onStatus: setStatus,
   });
@@ -278,6 +283,7 @@ ui.loadButton.addEventListener("click", async () => {
 
   clearRemovedItems();
   manualElements?.clear?.();
+  undoStack = [];
   await resetViewerVisualState();
 
   setStatus(`Loaded new IFC: ${file.name}`);
@@ -417,6 +423,9 @@ ui.deleteConcreteButton?.addEventListener("click", async () => {
   }
 
   const selectedIds = manualElements?.getSelectedIds?.() ?? [];
+  if (selectedIds.length > 0) {
+    pushUndoSnapshot("delete concrete");
+  }
   const deletedCount = manualElements?.deleteSelected?.() ?? 0;
 
   if (deletedCount > 0) {
@@ -431,6 +440,21 @@ ui.deleteConcreteButton?.addEventListener("click", async () => {
     deletedCount > 0
       ? `Deleted ${deletedCount} concrete element(s).`
       : "Select a concrete element first."
+  );
+});
+
+ui.snapConcreteButton?.addEventListener("click", () => {
+  const nextEnabled = !manualElements?.isSnapEnabled?.();
+
+  manualElements?.setSnapEnabled?.(nextEnabled);
+  ui.snapConcreteButton.textContent = nextEnabled ? "Snap On" : "Snap Off";
+  ui.snapConcreteButton.classList.toggle("is-active", nextEnabled);
+  ui.snapConcreteButton.setAttribute("aria-pressed", String(nextEnabled));
+
+  setStatus(
+    nextEnabled
+      ? "Concrete snapping enabled. Move with X/Y/Z arrows to snap to model faces."
+      : "Concrete snapping disabled."
   );
 });
 
@@ -458,6 +482,8 @@ ui.removeSelectedButton.addEventListener("click", async () => {
   }
 
   try {
+    pushUndoSnapshot("remove selected");
+
     const allGeometryItems = await getAllGeometryItems();
     const { resolved } = await resolveSelectionToGeometryItems(
       currentSelection,
@@ -497,6 +523,7 @@ ui.restoreRemovedButton.addEventListener("click", async () => {
     return;
   }
 
+  pushUndoSnapshot("restore removed");
   removedItems = {};
 
   try {
@@ -514,6 +541,8 @@ ui.restoreRemovedButton.addEventListener("click", async () => {
 // -----------------------------------------------------------------------------
 
 ui.addStageButton.addEventListener("click", async () => {
+  pushUndoSnapshot("add stage");
+
   const stageNumber = staging.getStages().length + 1;
   const stage = staging.createStage(`Stage ${stageNumber}`);
 
@@ -556,6 +585,8 @@ ui.assignStageButton.addEventListener("click", async () => {
     return;
   }
 
+  pushUndoSnapshot("assign stage");
+
   const ifcResult = isModelIdMapEmpty(currentSelection)
     ? { ok: true }
     : staging.assignSelectionToStage(currentStage.id, currentSelection);
@@ -597,6 +628,8 @@ ui.assignStageZeroButton?.addEventListener("click", async () => {
     return;
   }
 
+  pushUndoSnapshot("assign stage zero");
+
   const ifcResult = isModelIdMapEmpty(currentSelection)
     ? { ok: true }
     : staging.assignSelectionToStageZero(currentSelection);
@@ -636,6 +669,13 @@ ui.createLiftButton.addEventListener("click", async () => {
 
   const currentSelection = selection.getSelectedItem();
   const selectedManualIds = manualElements?.getSelectedIds?.() ?? [];
+
+  if (isModelIdMapEmpty(currentSelection) && selectedManualIds.length === 0) {
+    setStatus("Selection is empty.");
+    return;
+  }
+
+  pushUndoSnapshot("create lift");
 
   const result = staging.createLiftFromSelection(
     activeStageId,
@@ -691,6 +731,8 @@ ui.stageSummary.addEventListener("click", async (event) => {
       return;
     }
 
+    pushUndoSnapshot("rename lift");
+
     const result = staging.renameLift(stageId, liftId, newName);
 
     if (!result.ok) {
@@ -722,6 +764,8 @@ ui.stageSummary.addEventListener("click", async (event) => {
     if (!confirmed) {
       return;
     }
+
+    pushUndoSnapshot("delete lift");
 
     const result = staging.deleteLift(stageId, liftId);
 
@@ -772,6 +816,8 @@ ui.renameStageButton.addEventListener("click", () => {
     return;
   }
 
+  pushUndoSnapshot("rename stage");
+
   const result = staging.renameStage(activeStageId, newName);
 
   if (!result.ok) {
@@ -810,6 +856,8 @@ ui.clearStageButton.addEventListener("click", async () => {
   if (!confirmed) {
     return;
   }
+
+  pushUndoSnapshot("clear stage");
 
   const result = staging.clearStage(activeStageId);
 
@@ -851,6 +899,8 @@ ui.deleteStageButton.addEventListener("click", async () => {
   if (!confirmed) {
     return;
   }
+
+  pushUndoSnapshot("delete stage");
 
   const result = staging.deleteStage(activeStageId);
 
@@ -1029,6 +1079,7 @@ ui.projectFileInput.addEventListener("change", async () => {
 
     renderStagingUI();
     manualElements?.restore?.(projectData.stagingSnapshot?.manualElements);
+    undoStack = [];
     updateRemovedItemsControls();
     enterSequencingMode();
 
@@ -1097,6 +1148,22 @@ ui.fileInput.addEventListener("change", () => {
   const nameEl = document.getElementById("fileName");
 
   nameEl.textContent = file ? file.name : "No file selected";
+});
+
+window.addEventListener("keydown", async (event) => {
+  const target = event.target;
+  const isTyping =
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target?.isContentEditable;
+
+  if (isTyping) return;
+  if (!event.ctrlKey || event.shiftKey || event.altKey) return;
+  if (event.key.toLowerCase() !== "z") return;
+
+  event.preventDefault();
+  await undoLastChange();
 });
 
 // -----------------------------------------------------------------------------
@@ -1361,6 +1428,91 @@ function setRemovedItemsFromSerializable(serializableMap) {
 function clearRemovedItems() {
   removedItems = {};
   updateRemovedItemsControls();
+}
+
+function captureUndoSnapshot(label = "change") {
+  return {
+    label,
+    stagingSnapshot: staging.createSnapshot(),
+    manualElements: manualElements?.serialize?.() ?? [],
+    removedItems: modelIdMapToSerializable(removedItems),
+    selectedGridLevelId,
+    sliderValue: ui.stageSlider?.value ?? "0",
+    mode,
+    showContext,
+  };
+}
+
+function pushUndoSnapshot(label) {
+  if (isRestoringUndo) return;
+
+  undoStack.push(captureUndoSnapshot(label));
+
+  if (undoStack.length > MAX_UNDO_STEPS) {
+    undoStack.shift();
+  }
+}
+
+async function restoreUndoSnapshot(snapshot) {
+  if (!snapshot) return false;
+
+  isRestoringUndo = true;
+
+  try {
+    const restoreResult = staging.restoreFromSnapshot(snapshot.stagingSnapshot);
+
+    if (!restoreResult.ok) {
+      console.warn("Undo restore failed:", restoreResult.reason);
+      return false;
+    }
+
+    removedItems = serializableToModelIdMap(snapshot.removedItems);
+    manualElements?.restore?.(snapshot.manualElements);
+    setSelectedGridLevelId(snapshot.selectedGridLevelId, {
+      updateVisibleLayer: false,
+    });
+
+    mode = snapshot.mode === "sequencing" ? "sequencing" : "staging";
+    showContext = Boolean(snapshot.showContext);
+
+    if (mode === "sequencing") {
+      enterSequencingMode();
+      showContext = Boolean(snapshot.showContext);
+      ui.toggleContextButton.textContent = showContext
+        ? "Hide Context"
+        : "Show Context";
+    } else {
+      enterStagingMode();
+    }
+
+    renderStagingUI();
+    ui.stageSlider.value = snapshot.sliderValue ?? "0";
+    updateRemovedItemsControls();
+    updateSelectionControls();
+    await showCurrentSliderStage();
+
+    return true;
+  } finally {
+    isRestoringUndo = false;
+  }
+}
+
+async function undoLastChange() {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before undoing.");
+    return;
+  }
+
+  const snapshot = undoStack.pop();
+
+  if (!snapshot) {
+    setStatus("Nothing to undo.");
+    return;
+  }
+
+  const restored = await restoreUndoSnapshot(snapshot);
+
+  setStatus(restored ? `Undid ${snapshot.label}.` : "Undo failed.");
 }
 
 async function applyRemovedItemsVisibility({
