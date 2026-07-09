@@ -13,6 +13,7 @@ const ROTATION_RING_RADIUS_PADDING = 0.42;
 export function createManualElementManager({
   world,
   container,
+  modelRaycaster = null,
   getDefaultHeight = () => 3,
   onSelectionChanged = () => {},
   onBeforeChange = () => {},
@@ -425,8 +426,8 @@ export function createManualElementManager({
     };
   }
 
-  function pickModelFace(event) {
-    const hit = getSnapHit(event);
+  async function pickModelFace(event) {
+    const hit = await getModelSnapHit(event);
 
     if (!hit) return null;
 
@@ -1054,7 +1055,7 @@ export function createManualElementManager({
     event.stopImmediatePropagation();
   }
 
-  function updateShiftSnapHover(event) {
+  async function updateShiftSnapHover(event) {
     if (!snapEnabled || !event.shiftKey || drawing || moving || resizing || rotating) {
       concreteFaceMarker.visible = false;
       modelFaceMarker.visible = false;
@@ -1077,7 +1078,7 @@ export function createManualElementManager({
       return true;
     }
 
-    const modelFace = pickModelFace(event);
+    const modelFace = await pickModelFace(event);
 
     if (!modelFace) {
       modelFaceMarker.visible = false;
@@ -1102,7 +1103,7 @@ export function createManualElementManager({
     marker.visible = true;
   }
 
-  function handleShiftSnapClick(event) {
+  async function handleShiftSnapClick(event) {
     if (!snapEnabled || !event.shiftKey || drawing || moving || resizing || rotating) {
       return false;
     }
@@ -1128,7 +1129,7 @@ export function createManualElementManager({
       return true;
     }
 
-    const modelFace = pickModelFace(event);
+    const modelFace = await pickModelFace(event);
 
     if (!modelFace) {
       showSnapFeedback("No steel/model face found. Shift-click a visible model surface.");
@@ -1224,6 +1225,10 @@ export function createManualElementManager({
   }
 
   function getHitWorldNormal(hit) {
+    if (hit.normal?.isVector3) {
+      return hit.normal.clone().normalize();
+    }
+
     const normal = hit.face?.normal?.clone?.() ?? new THREE.Vector3(0, 1, 0);
 
     return normal.transformDirection(hit.object.matrixWorld).normalize();
@@ -1305,6 +1310,39 @@ export function createManualElementManager({
     const hits = raycaster.intersectObjects(candidates, false);
 
     return hits[0] ?? null;
+  }
+
+  async function getModelSnapHit(event) {
+    setPointerFromEvent(event);
+
+    if (modelRaycaster?.castRay) {
+      try {
+        modelRaycaster.mouse?.updateMouseInfo?.(event);
+
+        const fragmentHit = await modelRaycaster.castRay({
+          position: pointer.clone(),
+          items: [],
+        });
+
+        if (fragmentHit?.point) {
+          return normalizeRaycastHit(fragmentHit);
+        }
+      } catch (error) {
+        console.warn("IFC snap raycast failed, falling back to Three raycast.", error);
+      }
+    }
+
+    const threeHit = getSnapHit(event);
+
+    return threeHit ? normalizeRaycastHit(threeHit) : null;
+  }
+
+  function normalizeRaycastHit(hit) {
+    return {
+      ...hit,
+      point: hit.point.clone?.() ?? new THREE.Vector3(),
+      normal: hit.normal?.clone?.() ?? getHitWorldNormal(hit),
+    };
   }
 
   function isDescendantOf(object, parent) {
@@ -1540,7 +1578,7 @@ export function createManualElementManager({
     event.stopImmediatePropagation();
   }
 
-  function onPointerDown(event) {
+  async function onPointerDown(event) {
     if (event.button !== 0) return;
 
     pointerDown = {
@@ -1549,7 +1587,7 @@ export function createManualElementManager({
     };
 
     if (!drawEnabled) {
-      if (handleShiftSnapClick(event)) {
+      if (await handleShiftSnapClick(event)) {
         return;
       }
 
@@ -1630,8 +1668,8 @@ export function createManualElementManager({
     event.stopImmediatePropagation();
   }
 
-  function onPointerMove(event) {
-    if (updateShiftSnapHover(event)) {
+  async function onPointerMove(event) {
+    if (await updateShiftSnapHover(event)) {
       return;
     }
 

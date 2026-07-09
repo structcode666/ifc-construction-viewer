@@ -194,6 +194,7 @@ async function startApp() {
   manualElements = createManualElementManager({
     world,
     container: ui.viewerContainer,
+    modelRaycaster: components.get(OBC.Raycasters).get(world),
     getDefaultHeight: () => Number(ui.concreteHeightInput?.value ?? 3),
     onSelectionChanged: () => updateSelectionControls(),
     onBeforeChange: (label) => pushUndoSnapshot(label),
