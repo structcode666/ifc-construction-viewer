@@ -755,6 +755,7 @@ button:disabled {
    SECTION CUT VIEWER TOOL
 ========================= */
 
+.manual-elements-toolbar,
 .section-cut-toolbar,
 .grid-toolbar {
   width: 230px;
@@ -783,6 +784,30 @@ button:disabled {
   color: #e2e8f0;
 }
 
+.manual-elements-title {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #e2e8f0;
+}
+
+.manual-elements-label {
+  font-size: 0.68rem;
+  font-weight: 700;
+  color: #cbd5e1;
+}
+
+.manual-elements-input {
+  width: 100%;
+  min-height: 36px;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.86);
+  color: #f8fafc;
+  font: 700 0.74rem Inter, Arial, sans-serif;
+}
+
 .section-cut-hint {
   margin: 0.15rem 0 0;
   font-size: 0.72rem;
@@ -791,6 +816,7 @@ button:disabled {
 }
 
 .section-cut-toolbar .viewer-pill-button,
+.manual-elements-toolbar .viewer-pill-button,
 .grid-toolbar .viewer-pill-button {
   width: 100%;
   min-width: 0;
@@ -845,6 +871,10 @@ button:disabled {
 .viewer-pill-button.is-active {
   background: linear-gradient(135deg, #16a34a, #15803d);
   border-color: rgba(74, 222, 128, 0.55);
+}
+
+#viewer-container.is-drawing-concrete {
+  cursor: crosshair;
 }
 
 /* =========================

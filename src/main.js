@@ -5,6 +5,7 @@ import { setupWorld } from "./viewer/setupWorld.js";
 import { loadIfcFromFile } from "./viewer/loadIfc.js";
 import { initSelection } from "./viewer/selection.js";
 import { createStagingManager } from "./viewer/staging.js";
+import { createManualElementManager } from "./viewer/manualElements.js";
 import {
   initClipping,
   toggleClippingEnabled,
@@ -79,6 +80,7 @@ let isPdfExporting = false;
 let pdfExportRunNumber = 0;
 let ifcGridLayer = null;
 let removedItems = {};
+let manualElements = null;
 
 const staging = createStagingManager();
 
@@ -184,6 +186,17 @@ async function startApp() {
     },
   });
 
+  manualElements = createManualElementManager({
+    world,
+    container: ui.viewerContainer,
+    getDefaultHeight: () => Number(ui.concreteHeightInput?.value ?? 3),
+    onSelectionChanged: () => updateSelectionControls(),
+    onElementChanged: () => renderStagingUI(),
+    onStatus: setStatus,
+  });
+
+  window.manualElements = manualElements;
+
   selection = initSelection({
     components,
     world,
@@ -194,7 +207,8 @@ async function startApp() {
 
     // Prevent selection/highlight changes while the model is temporarily dressed
     // for PDF export.
-    canSelect: () => !isPdfExporting,
+    canSelect: () =>
+      !isPdfExporting && !manualElements?.isPointerInteractionActive?.(),
   });
 
   await initClipping({
@@ -263,6 +277,7 @@ ui.loadButton.addEventListener("click", async () => {
   }
 
   clearRemovedItems();
+  manualElements?.clear?.();
   await resetViewerVisualState();
 
   setStatus(`Loaded new IFC: ${file.name}`);
@@ -373,6 +388,52 @@ ui.gridLevelSelect?.addEventListener("change", () => {
   }
 });
 
+ui.drawConcreteButton?.addEventListener("click", () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before drawing concrete.");
+    return;
+  }
+
+  const nextEnabled = !manualElements?.isDrawEnabled?.();
+  manualElements?.setDrawEnabled(nextEnabled);
+
+  ui.drawConcreteButton.textContent = nextEnabled
+    ? "Finish Drawing"
+    : "Draw Concrete";
+  ui.drawConcreteButton.classList.toggle("is-active", nextEnabled);
+  ui.drawConcreteButton.setAttribute("aria-pressed", String(nextEnabled));
+
+  setStatus(
+    nextEnabled
+      ? "Drag a footprint in the viewer to create concrete."
+      : "Concrete drawing mode off."
+  );
+});
+
+ui.deleteConcreteButton?.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before deleting concrete.");
+    return;
+  }
+
+  const selectedIds = manualElements?.getSelectedIds?.() ?? [];
+  const deletedCount = manualElements?.deleteSelected?.() ?? 0;
+
+  if (deletedCount > 0) {
+    staging.removeManualElements(selectedIds);
+  }
+
+  updateSelectionControls();
+  renderStagingUI();
+  await showCurrentSliderStage();
+
+  setStatus(
+    deletedCount > 0
+      ? `Deleted ${deletedCount} concrete element(s).`
+      : "Select a concrete element first."
+  );
+});
+
 ui.removeSelectedButton.addEventListener("click", async () => {
   if (isPdfExporting) {
     setStatus("Wait for PDF export to finish before removing elements.");
@@ -480,8 +541,9 @@ ui.assignStageButton.addEventListener("click", async () => {
   }
 
   const currentSelection = selection.getSelectedItem();
+  const selectedManualIds = manualElements?.getSelectedIds?.() ?? [];
 
-  if (!currentSelection) {
+  if (isModelIdMapEmpty(currentSelection) && selectedManualIds.length === 0) {
     setStatus("Select some elements first.");
     return;
   }
@@ -494,13 +556,18 @@ ui.assignStageButton.addEventListener("click", async () => {
     return;
   }
 
-  const result = staging.assignSelectionToStage(
-    currentStage.id,
-    currentSelection
-  );
+  const ifcResult = isModelIdMapEmpty(currentSelection)
+    ? { ok: true }
+    : staging.assignSelectionToStage(currentStage.id, currentSelection);
+  const manualResult =
+    selectedManualIds.length === 0
+      ? { ok: true }
+      : staging.assignManualSelectionToStage(currentStage.id, selectedManualIds);
 
-  if (!result.ok) {
-    setStatus(`Stage assignment failed: ${result.reason}`);
+  if (!ifcResult.ok || !manualResult.ok) {
+    setStatus(
+      `Stage assignment failed: ${ifcResult.reason ?? manualResult.reason}`
+    );
     return;
   }
 
@@ -509,6 +576,7 @@ ui.assignStageButton.addEventListener("click", async () => {
 
   await showCurrentSliderStage();
   await selection.clearSelection();
+  manualElements?.clearSelection?.();
 
   setStatus(`Assigned selection to ${currentStage.name}.`);
   console.log("Assigned selection:", currentStage.name);
@@ -529,10 +597,12 @@ ui.createLiftButton.addEventListener("click", async () => {
   }
 
   const currentSelection = selection.getSelectedItem();
+  const selectedManualIds = manualElements?.getSelectedIds?.() ?? [];
 
   const result = staging.createLiftFromSelection(
     activeStageId,
-    currentSelection
+    currentSelection,
+    selectedManualIds
   );
 
   if (!result.ok) {
@@ -547,6 +617,7 @@ ui.createLiftButton.addEventListener("click", async () => {
 
   await showCurrentSliderStage();
   await selection.clearSelection();
+  manualElements?.clearSelection?.();
 
   console.log("Lift created:", result.lift);
   console.log("Updated staging state:", staging.debugState());
@@ -828,6 +899,7 @@ ui.saveProjectButton.addEventListener("click", async () => {
   try {
     const stagingSnapshot = {
       ...staging.createSnapshot(),
+      manualElements: manualElements?.serialize?.() ?? [],
       removedItems: modelIdMapToSerializable(removedItems),
       selectedGridLevelId,
     };
@@ -918,6 +990,7 @@ ui.projectFileInput.addEventListener("change", async () => {
     }
 
     renderStagingUI();
+    manualElements?.restore?.(projectData.stagingSnapshot?.manualElements);
     updateRemovedItemsControls();
     enterSequencingMode();
 
@@ -1026,6 +1099,7 @@ async function resetViewerVisualState() {
 
   await hider.set(true);
   await applyRemovedItemsVisibility({ hider, update: false });
+  manualElements?.showAll?.();
 
   await fragments.resetHighlight();
 
@@ -1277,10 +1351,16 @@ async function applyRemovedItemsVisibility({
 }
 
 function updateSelectionControls(currentSelection = selection?.getSelectedItem?.()) {
-  if (!ui.removeSelectedButton) return;
+  const hasManualSelection = manualElements?.hasSelection?.() ?? false;
 
-  ui.removeSelectedButton.disabled =
-    isPdfExporting || isModelIdMapEmpty(currentSelection);
+  if (ui.removeSelectedButton) {
+    ui.removeSelectedButton.disabled =
+      isPdfExporting || isModelIdMapEmpty(currentSelection);
+  }
+
+  if (ui.deleteConcreteButton) {
+    ui.deleteConcreteButton.disabled = isPdfExporting || !hasManualSelection;
+  }
 }
 
 function updateRemovedItemsControls() {
@@ -2001,6 +2081,39 @@ function getPreviousStageItems(stageId) {
     .map((stage) => stage.items);
 
   return mergeModelIdMaps(...previousStageMaps);
+}
+
+function getPreviousStageManualItems(stageId) {
+  const debugState = staging.debugState();
+  const targetIndex = debugState.stages.findIndex(
+    (stage) => stage.id === stageId
+  );
+
+  if (targetIndex === -1) {
+    return new Set();
+  }
+
+  const ids = new Set();
+
+  for (const stage of debugState.stages.slice(0, targetIndex)) {
+    for (const id of stage.manualItems ?? []) {
+      ids.add(id);
+    }
+  }
+
+  return ids;
+}
+
+function unionIdSets(...sets) {
+  const result = new Set();
+
+  for (const set of sets) {
+    for (const id of set ?? []) {
+      result.add(id);
+    }
+  }
+
+  return result;
 }
 
 function createPdfExportBuckets({
@@ -2817,8 +2930,19 @@ async function showCurrentSliderStage() {
 
       if (showContext) {
         const assignedItems = mergeAllStageItems();
+        const assignedManualIds = mergeAllStageManualItems();
+        const unassignedManualIds = subtractIdSet(
+          new Set(manualElements?.getAllIds?.() ?? []),
+          assignedManualIds
+        );
 
-        if (!isModelIdMapEmpty(assignedItems)) {
+        manualElements?.showWithContext?.(
+          unassignedManualIds,
+          assignedManualIds,
+          0.18
+        );
+
+        if (!isModelIdMapEmpty(assignedItems) || assignedManualIds.size > 0) {
           const opacityApplied = await setOpacityForItems(assignedItems, 0.15);
           if (!opacityApplied) {
             await resetAllOpacity();
@@ -2851,6 +2975,7 @@ async function showCurrentSliderStage() {
     staging.getActiveStageSelection() ?? {},
     removedItems
   );
+  const manualIdsToShow = staging.getActiveStageManualSelection() ?? new Set();
 
   console.log("showCurrentSliderStage mode:", mode);
   console.log("showCurrentSliderStage stage:", stage);
@@ -2858,8 +2983,9 @@ async function showCurrentSliderStage() {
   console.log("itemsToShow model IDs:", Object.keys(itemsToShow ?? {}));
   console.log("loaded fragment model IDs:", [...fragments.list.keys()]);
   console.log("itemsToShow empty?", isModelIdMapEmpty(itemsToShow));
+  console.log("manualIdsToShow:", [...manualIdsToShow]);
 
-  if (isModelIdMapEmpty(itemsToShow)) {
+  if (isModelIdMapEmpty(itemsToShow) && manualIdsToShow.size === 0) {
     try {
       await resetViewerVisualState();
       await updateLiftLabelsForCurrentView();
@@ -2880,8 +3006,13 @@ async function showCurrentSliderStage() {
     if (!showContext) {
       console.log("About to isolate items:", itemsToShow);
 
-      await hider.isolate(itemsToShow);
+      if (isModelIdMapEmpty(itemsToShow)) {
+        await hider.set(false);
+      } else {
+        await hider.isolate(itemsToShow);
+      }
       await applyRemovedItemsVisibility({ hider, update: false });
+      manualElements?.setVisibleIds?.(manualIdsToShow);
       await fragments.core.update(true);
       await updateLiftLabelsForCurrentView();
 
@@ -2895,11 +3026,21 @@ async function showCurrentSliderStage() {
 
     const allItems = await getProjectGeometryItems();
     const contextItems = subtractModelIdMap(allItems, itemsToShow);
+    const contextManualIds = subtractIdSet(
+      new Set(manualElements?.getAllIds?.() ?? []),
+      manualIdsToShow
+    );
 
     const opacityApplied = await setOpacityForItems(contextItems, 0.15);
     if (!opacityApplied) {
       await resetAllOpacity();
     }
+
+    manualElements?.showWithContext?.(
+      manualIdsToShow,
+      contextManualIds,
+      0.18
+    );
 
     await updateLiftLabelsForCurrentView();
 
@@ -3050,6 +3191,29 @@ function mergeAllStageItems() {
   }
 
   return subtractModelIdMap(merged, removedItems);
+}
+
+function mergeAllStageManualItems() {
+  const merged = new Set();
+  const debugState = staging.debugState();
+
+  for (const stage of debugState.stages) {
+    for (const id of stage.manualItems ?? []) {
+      merged.add(id);
+    }
+  }
+
+  return merged;
+}
+
+function subtractIdSet(allIds, idsToRemove) {
+  const result = new Set(allIds ?? []);
+
+  for (const id of idsToRemove ?? []) {
+    result.delete(id);
+  }
+
+  return result;
 }
 
 // -----------------------------------------------------------------------------
@@ -3647,9 +3811,14 @@ async function captureStageSheetData(
     previousOnlyItems,
     currentGeometryItems
   );
+  const foregroundManualIds = unionIdSets(
+    getPreviousStageManualItems(stage.id),
+    staging.getStageManualSelection(stage.id)
+  );
 
   await hider.set(true);
   await applyRemovedItemsVisibility({ hider, fragmentsManager, update: false });
+  manualElements?.showAll?.();
   await resetPdfExportFragmentStyles(context, "before PDF context image capture", {
     fragmentsManager,
     worldOverride,
@@ -3695,6 +3864,7 @@ async function captureStageSheetData(
     await hider.isolate(foregroundItems);
   }
   await applyRemovedItemsVisibility({ hider, fragmentsManager, update: false });
+  manualElements?.setVisibleIds?.(foregroundManualIds);
 
   await waitForStableExportFrame({
     frames: PDF_EXPORT_SETTLE_FRAMES,

@@ -13,6 +13,22 @@ export function createStagingManager() {
     return `lift-${crypto.randomUUID()}`;
   }
 
+  function cloneIdSet(ids) {
+    return new Set(ids ?? []);
+  }
+
+  function idSetToSerializable(ids) {
+    return [...(ids ?? [])];
+  }
+
+  function serializableToIdSet(ids) {
+    return new Set(Array.isArray(ids) ? ids : []);
+  }
+
+  function isIdSetEmpty(ids) {
+    return !ids || ids.size === 0;
+  }
+
   function getActiveStageId() {
     return state.activeStageId;
   } 
@@ -120,6 +136,32 @@ export function createStagingManager() {
     }
   }
 
+  function removeManualIdsFromSet(targetIds, idsToRemove) {
+    if (!targetIds || isIdSetEmpty(idsToRemove)) return;
+
+    for (const id of idsToRemove) {
+      targetIds.delete(id);
+    }
+  }
+
+  function removeManualIdsFromAllLifts(ids) {
+    if (isIdSetEmpty(ids)) return;
+
+    for (const stage of state.stages) {
+      for (const lift of stage.lifts ?? []) {
+        removeManualIdsFromSet(lift.manualItems, ids);
+      }
+    }
+  }
+
+  function removeManualIdsFromAllStages(ids) {
+    if (isIdSetEmpty(ids)) return;
+
+    for (const stage of state.stages) {
+      removeManualIdsFromSet(stage.manualItems, ids);
+    }
+  }
+
   function createStage(name) {
     const trimmedName = name?.trim();
 
@@ -127,6 +169,7 @@ export function createStagingManager() {
       id: generateStageId(),
       name: trimmedName || `Stage ${state.stages.length + 1}`,
       items: {},
+      manualItems: new Set(),
       view: null,
       lifts: [],
     };
@@ -316,8 +359,47 @@ export function createStagingManager() {
     return { ok: true, stage };
   }
 
-  function createLiftFromSelection(stageId, selection) {
-    if (isSelectionEmpty(selection)) {
+  function assignManualSelectionToStage(stageId, manualIds) {
+    const ids = cloneIdSet(manualIds);
+
+    if (isIdSetEmpty(ids)) {
+      return { ok: false, reason: "Manual selection is empty." };
+    }
+
+    const stage = getStageById(stageId);
+
+    if (!stage) {
+      return { ok: false, reason: "Stage not found." };
+    }
+
+    if (!stage.manualItems) {
+      stage.manualItems = new Set();
+    }
+
+    removeManualIdsFromAllStages(ids);
+
+    for (const id of ids) {
+      stage.manualItems.add(id);
+    }
+
+    return { ok: true, stage };
+  }
+
+  function removeManualElements(manualIds) {
+    const ids = cloneIdSet(manualIds);
+
+    if (isIdSetEmpty(ids)) {
+      return;
+    }
+
+    removeManualIdsFromAllStages(ids);
+    removeManualIdsFromAllLifts(ids);
+  }
+
+  function createLiftFromSelection(stageId, selection, manualIds = []) {
+    const manualSelection = cloneIdSet(manualIds);
+
+    if (isSelectionEmpty(selection) && isIdSetEmpty(manualSelection)) {
       return {
         ok: false,
         reason: "Selection is empty.",
@@ -339,19 +421,33 @@ export function createStagingManager() {
       stage.lifts = [];
     }
 
+    if (!stage.manualItems) {
+      stage.manualItems = new Set();
+    }
+
     // Creating a lift also means these elements belong to this stage.
     // This reuses your existing stage assignment rule:
     // an element can belong to only one stage at a time.
-    assignSelectionToStage(stageId, selection);
+    if (!isSelectionEmpty(selection)) {
+      assignSelectionToStage(stageId, selection);
+    }
+
+    if (!isIdSetEmpty(manualSelection)) {
+      assignManualSelectionToStage(stageId, manualSelection);
+    }
 
     // A selected element should only belong to one lift at a time.
     // Remove it from any previous lift before adding it to the new one.
-    removeSelectionFromAllLifts(selection);
+    if (!isSelectionEmpty(selection)) {
+      removeSelectionFromAllLifts(selection);
+    }
+    removeManualIdsFromAllLifts(manualSelection);
 
     const lift = {
       id: generateLiftId(),
       name: getNextLiftName(stage),
       items: cloneModelIdMap(selection),
+      manualItems: cloneIdSet(manualSelection),
       label: {
         position: null,
       },
@@ -377,6 +473,7 @@ export function createStagingManager() {
     }
 
     stage.items = {};
+    stage.manualItems = new Set();
     stage.lifts = [];
 
     return {
@@ -392,6 +489,13 @@ export function createStagingManager() {
     return cloneModelIdMap(stage.items);
   }
 
+  function getStageManualSelection(stageId) {
+    const stage = getStageById(stageId);
+    if (!stage) return null;
+
+    return cloneIdSet(stage.manualItems);
+  }
+
   function getCumulativeSelection(stageId) {
     const cumulative = {};
     const targetIndex = state.stages.findIndex((stage) => stage.id === stageId);
@@ -401,6 +505,23 @@ export function createStagingManager() {
     for (let i = 0; i <= targetIndex; i++) {
       const stage = state.stages[i];
       Object.assign(cumulative, mergeModelIdMaps(cumulative, stage.items));
+    }
+
+    return cumulative;
+  }
+
+  function getCumulativeManualSelection(stageId) {
+    const cumulative = new Set();
+    const targetIndex = state.stages.findIndex((stage) => stage.id === stageId);
+
+    if (targetIndex === -1) return null;
+
+    for (let i = 0; i <= targetIndex; i++) {
+      const stage = state.stages[i];
+
+      for (const id of stage.manualItems ?? []) {
+        cumulative.add(id);
+      }
     }
 
     return cumulative;
@@ -441,6 +562,20 @@ export function createStagingManager() {
     return null;
   }
 
+  function getActiveStageManualSelection() {
+    if (!state.activeStageId) return null;
+
+    if (state.viewMode === "single") {
+      return getStageManualSelection(state.activeStageId);
+    }
+
+    if (state.viewMode === "cumulative") {
+      return getCumulativeManualSelection(state.activeStageId);
+    }
+
+    return null;
+  }
+
   function moveStage(stageId, newIndex) {
     const currentIndex = state.stages.findIndex((stage) => stage.id === stageId);
     if (currentIndex === -1) return false;
@@ -457,12 +592,14 @@ export function createStagingManager() {
     return state.stages.map((stage) => ({
       id: stage.id,
       name: stage.name,
-      itemCount: countItemsInModelIdMap(stage.items),
+      itemCount:
+        countItemsInModelIdMap(stage.items) + (stage.manualItems?.size ?? 0),
 
       lifts: (stage.lifts ?? []).map((lift) => ({
         id: lift.id,
         name: lift.name,
-        itemCount: countItemsInModelIdMap(lift.items),
+        itemCount:
+          countItemsInModelIdMap(lift.items) + (lift.manualItems?.size ?? 0),
       })),
     }));
   }
@@ -488,12 +625,14 @@ export function createStagingManager() {
         id: stage.id,
         name: stage.name,
         items: modelIdMapToSerializable(stage.items),
+        manualItems: idSetToSerializable(stage.manualItems),
         view: stage.view ?? null,
 
         lifts: (stage.lifts ?? []).map((lift) => ({
           id: lift.id,
           name: lift.name,
           items: modelIdMapToSerializable(lift.items),
+          manualItems: idSetToSerializable(lift.manualItems),
           label: lift.label ?? {
             position: null,
           },
@@ -514,6 +653,7 @@ export function createStagingManager() {
       id: stage.id || generateStageId(),
       name: stage.name || `Stage ${index + 1}`,
       items: serializableToModelIdMap(stage.items),
+      manualItems: serializableToIdSet(stage.manualItems),
       view: stage.view ?? null,
 
       lifts: Array.isArray(stage.lifts)
@@ -521,6 +661,7 @@ export function createStagingManager() {
             id: lift.id || generateLiftId(),
             name: lift.name || `LIFT ${liftIndex + 1}`,
             items: serializableToModelIdMap(lift.items),
+            manualItems: serializableToIdSet(lift.manualItems),
             label: lift.label ?? {
               position: null,
             },
@@ -552,6 +693,7 @@ export function createStagingManager() {
         id: stage.id,
         name: stage.name,
         items: cloneModelIdMap(stage.items),
+        manualItems: cloneIdSet(stage.manualItems),
         view: stage.view ?? null,
         lifts: stage.lifts ?? [],
       })),
@@ -637,15 +779,20 @@ export function createStagingManager() {
 
     moveStage,
     assignSelectionToStage,
+    assignManualSelectionToStage,
+    removeManualElements,
     createLiftFromSelection,
     clearStage,
 
     getStageSelection,
+    getStageManualSelection,
     getCumulativeSelection,
+    getCumulativeManualSelection,
     setActiveStage,
     clearActiveStage,
     setViewMode,
     getActiveStageSelection,
+    getActiveStageManualSelection,
 
     createSnapshot,
     restoreFromSnapshot,

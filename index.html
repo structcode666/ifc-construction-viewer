@@ -186,6 +186,43 @@
             Show Lift Labels
           </button>
 
+          <div class="manual-elements-toolbar">
+            <div class="manual-elements-title">
+              Manual Concrete
+            </div>
+
+            <button
+              id="drawConcreteButton"
+              type="button"
+              class="viewer-pill-button primary"
+              aria-pressed="false"
+            >
+              Draw Concrete
+            </button>
+
+            <label class="manual-elements-label" for="concreteHeightInput">
+              Height
+            </label>
+
+            <input
+              id="concreteHeightInput"
+              class="manual-elements-input"
+              type="number"
+              min="0.1"
+              step="0.1"
+              value="3"
+            />
+
+            <button
+              id="deleteConcreteButton"
+              type="button"
+              class="viewer-pill-button"
+              disabled
+            >
+              Delete Concrete
+            </button>
+          </div>
+
           <div class="section-cut-toolbar">
             <div class="section-cut-title">
               Section Cuts

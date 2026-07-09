@@ -35,6 +35,10 @@ export function getUI() {
     toggleGridsButton: document.getElementById("toggleGridsButton"),
     gridLevelSelect: document.getElementById("gridLevelSelect"),
 
+    drawConcreteButton: document.getElementById("drawConcreteButton"),
+    concreteHeightInput: document.getElementById("concreteHeightInput"),
+    deleteConcreteButton: document.getElementById("deleteConcreteButton"),
+
     saveProjectButton: document.getElementById("saveProjectButton"),
     projectFileInput: document.getElementById("projectFileInput"),
 
