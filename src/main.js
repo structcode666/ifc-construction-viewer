@@ -418,6 +418,47 @@ ui.drawConcreteButton?.addEventListener("click", () => {
   );
 });
 
+function updateConcreteTransformModeButtons(activeMode) {
+  ui.concreteTransformModeButtons?.forEach((button) => {
+    const isActive = button.dataset.concreteTransformMode === activeMode;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
+}
+
+function updateSnapConcreteButton() {
+  const snapEnabled = Boolean(manualElements?.isSnapEnabled?.());
+
+  if (!ui.snapConcreteButton) return;
+
+  ui.snapConcreteButton.textContent = snapEnabled ? "Snap On" : "Snap Off";
+  ui.snapConcreteButton.classList.toggle("is-active", snapEnabled);
+  ui.snapConcreteButton.setAttribute("aria-pressed", String(snapEnabled));
+}
+
+ui.concreteTransformModeButtons?.forEach((button) => {
+  button.addEventListener("click", () => {
+    const mode = button.dataset.concreteTransformMode;
+    const activeMode = manualElements?.setTransformMode?.(mode) ?? "move";
+
+    if (activeMode === "snap" && !manualElements?.isSnapEnabled?.()) {
+      manualElements?.setSnapEnabled?.(true);
+      updateSnapConcreteButton();
+    }
+
+    updateConcreteTransformModeButtons(activeMode);
+
+    const modeLabels = {
+      move: "Move mode: drag the concrete element or use X/Y/Z arrows.",
+      resize: "Resize mode: drag a face arrow to extend or contract the concrete element.",
+      rotate: "Rotate mode: drag a rotation ring around the X/Y/Z axis.",
+      snap: "Snap mode: hold Shift, click a concrete face, then Shift-click a model surface.",
+    };
+
+    setStatus(modeLabels[activeMode] ?? "Concrete transform mode updated.");
+  });
+});
+
 ui.deleteConcreteButton?.addEventListener("click", async () => {
   if (isPdfExporting) {
     setStatus("Wait for PDF export to finish before deleting concrete.");
@@ -449,9 +490,7 @@ ui.snapConcreteButton?.addEventListener("click", () => {
   const nextEnabled = !manualElements?.isSnapEnabled?.();
 
   manualElements?.setSnapEnabled?.(nextEnabled);
-  ui.snapConcreteButton.textContent = nextEnabled ? "Snap On" : "Snap Off";
-  ui.snapConcreteButton.classList.toggle("is-active", nextEnabled);
-  ui.snapConcreteButton.setAttribute("aria-pressed", String(nextEnabled));
+  updateSnapConcreteButton();
 
   setStatus(
     nextEnabled

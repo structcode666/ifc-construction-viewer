@@ -38,6 +38,9 @@ export function getUI() {
 
     drawConcreteButton: document.getElementById("drawConcreteButton"),
     concreteHeightInput: document.getElementById("concreteHeightInput"),
+    concreteTransformModeButtons: document.querySelectorAll(
+      "[data-concrete-transform-mode]"
+    ),
     deleteConcreteButton: document.getElementById("deleteConcreteButton"),
     snapConcreteButton: document.getElementById("snapConcreteButton"),
 

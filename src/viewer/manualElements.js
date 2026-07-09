@@ -9,6 +9,7 @@ const MIN_POINTER_DRAG_PX = 6;
 const HANDLE_SIZE = 0.32;
 const MOVE_HANDLE_LENGTH = 1.2;
 const ROTATION_RING_RADIUS_PADDING = 0.42;
+const TRANSFORM_MODES = new Set(["move", "resize", "rotate", "snap"]);
 
 export function createManualElementManager({
   world,
@@ -70,6 +71,7 @@ export function createManualElementManager({
   const modelFaceMarker = createFaceMarker("#facc15");
   let drawEnabled = false;
   let snapEnabled = false;
+  let transformMode = "move";
   let pdfAppearanceEnabled = false;
   let pendingConcreteSnapFace = null;
   let drawing = null;
@@ -332,7 +334,7 @@ export function createManualElementManager({
     const [firstSelectedId] = selectedIds;
     const firstSelected = firstSelectedId ? elements.get(firstSelectedId) : null;
 
-    updateResizeHandles(firstSelected);
+    updateTransformHandles(firstSelected);
 
     onSelectionChanged(getSelectedIds());
     requestRender();
@@ -698,7 +700,7 @@ export function createManualElementManager({
     }
   }
 
-  function updateResizeHandles(element) {
+  function updateTransformHandles(element) {
     if (!element || !element.mesh.visible) {
       hideAllHandles();
       return;
@@ -742,7 +744,7 @@ export function createManualElementManager({
     for (const handle of resizeHandles) {
       const { axis, sign } = handle.userData.resizeHandle;
       handle.position.copy(positions[`${axis}:${sign}`]);
-      handle.visible = true;
+      handle.visible = transformMode === "resize";
     }
 
     for (const handle of moveHandles) {
@@ -755,7 +757,7 @@ export function createManualElementManager({
             : size.z / 2 + HANDLE_SIZE * 2.5;
 
       handle.position.copy(center).add(direction.clone().multiplyScalar(offset));
-      handle.visible = true;
+      handle.visible = transformMode === "move";
     }
 
     const ringRadius =
@@ -764,7 +766,7 @@ export function createManualElementManager({
     for (const handle of rotationHandles) {
       handle.position.copy(center);
       handle.scale.setScalar(ringRadius);
-      handle.visible = true;
+      handle.visible = transformMode === "rotate";
     }
   }
 
@@ -806,7 +808,7 @@ export function createManualElementManager({
       element.mesh.visible = visibleIds.has(element.id);
     }
 
-    updateResizeHandles(getFirstSelectedElement());
+    updateTransformHandles(getFirstSelectedElement());
     requestRender();
   }
 
@@ -816,7 +818,7 @@ export function createManualElementManager({
       setElementOpacity(element, getConcreteOpacity());
     }
 
-    updateResizeHandles(getFirstSelectedElement());
+    updateTransformHandles(getFirstSelectedElement());
     requestRender();
   }
 
@@ -840,7 +842,7 @@ export function createManualElementManager({
       );
     }
 
-    updateResizeHandles(getFirstSelectedElement());
+    updateTransformHandles(getFirstSelectedElement());
     requestRender();
   }
 
@@ -920,6 +922,44 @@ export function createManualElementManager({
     }
 
     container.classList.toggle("is-drawing-concrete", drawEnabled);
+  }
+
+  function setTransformMode(mode) {
+    if (!TRANSFORM_MODES.has(mode)) return transformMode;
+
+    transformMode = mode;
+    hideFaceSnapState({ keepPending: transformMode === "snap" });
+
+    if (transformMode !== "snap") {
+      hideSnapFeedback();
+    }
+
+    updateTransformHandles(getFirstSelectedElement());
+    requestRender();
+
+    return transformMode;
+  }
+
+  function getTransformMode() {
+    return transformMode;
+  }
+
+  function getTransformModeHint() {
+    if (transformMode === "resize") {
+      return "Drag a face arrow to resize it.";
+    }
+
+    if (transformMode === "rotate") {
+      return "Drag a rotation ring to rotate it.";
+    }
+
+    if (transformMode === "snap") {
+      return snapEnabled
+        ? "Hold Shift and click faces to snap it to the model."
+        : "Turn Snap On, then hold Shift and click faces to place it.";
+    }
+
+    return "Drag it to move on plan, or use X/Y/Z arrows for axis moves.";
   }
 
   function setSnapEnabled(enabled) {
@@ -1048,7 +1088,7 @@ export function createManualElementManager({
     applySnapToMovingPosition(event, nextPosition, delta);
     moving.element.mesh.position.copy(nextPosition);
     moving.element.position = vectorToPlain(moving.element.mesh.position);
-    updateResizeHandles(moving.element);
+    updateTransformHandles(moving.element);
     requestRender();
 
     event.preventDefault();
@@ -1168,7 +1208,7 @@ export function createManualElementManager({
 
     element.mesh.position.add(delta);
     element.position = vectorToPlain(element.mesh.position);
-    updateResizeHandles(element);
+    updateTransformHandles(element);
   }
 
   function getConcreteFaceCenter(element, face) {
@@ -1446,7 +1486,7 @@ export function createManualElementManager({
     rotating.element.rotation = quaternionToPlain(
       rotating.element.mesh.quaternion
     );
-    updateResizeHandles(rotating.element);
+    updateTransformHandles(rotating.element);
     requestRender();
 
     event.preventDefault();
@@ -1553,7 +1593,7 @@ export function createManualElementManager({
 
     resizing.element.mesh.position.copy(nextPosition);
     updateElementGeometry(resizing.element, nextSize);
-    updateResizeHandles(resizing.element);
+    updateTransformHandles(resizing.element);
     requestRender();
 
     event.preventDefault();
@@ -1591,7 +1631,8 @@ export function createManualElementManager({
         return;
       }
 
-      const pickedMoveHandle = pickMoveHandle(event);
+      const pickedMoveHandle =
+        transformMode === "move" ? pickMoveHandle(event) : null;
 
       if (pickedMoveHandle) {
         const selectedElement = getFirstSelectedElement();
@@ -1611,7 +1652,8 @@ export function createManualElementManager({
         return;
       }
 
-      const pickedRotationHandle = pickRotationHandle(event);
+      const pickedRotationHandle =
+        transformMode === "rotate" ? pickRotationHandle(event) : null;
 
       if (pickedRotationHandle && startRotating(event, pickedRotationHandle)) {
         const axis = pickedRotationHandle.userData.rotationHandle.label;
@@ -1621,7 +1663,8 @@ export function createManualElementManager({
         return;
       }
 
-      const pickedHandle = pickResizeHandle(event);
+      const pickedHandle =
+        transformMode === "resize" ? pickResizeHandle(event) : null;
 
       if (pickedHandle && startResizing(event, pickedHandle)) {
         event.preventDefault();
@@ -1640,12 +1683,14 @@ export function createManualElementManager({
 
       selectIds([pickedId]);
 
-      if (startMoving(event, pickedId)) {
+      if (transformMode === "move" && startMoving(event, pickedId)) {
         onStatus(
           `Concrete element selected. Drag to move on plan, or use X/Y/Z arrows for axis moves${snapEnabled ? " with snap on" : ""}.`
         );
         event.preventDefault();
         event.stopImmediatePropagation();
+      } else {
+        onStatus(`Concrete element selected. ${getTransformModeHint()}`);
       }
 
       return;
@@ -1804,6 +1849,8 @@ export function createManualElementManager({
   return {
     setDrawEnabled,
     isDrawEnabled: () => drawEnabled,
+    setTransformMode,
+    getTransformMode,
     setSnapEnabled,
     isSnapEnabled: () => snapEnabled,
     setPdfAppearanceEnabled,
