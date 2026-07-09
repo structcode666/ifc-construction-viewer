@@ -1,6 +1,59 @@
 import * as OBC from "@thatopen/components";
 import * as OBCF from "@thatopen/components-front";
 
+const NORMAL_DOLLY_SPEED = 0.3;
+const PRECISION_DOLLY_SPEED = 0.06;
+
+function isTypingTarget(target) {
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target?.isContentEditable
+  );
+}
+
+function setupPrecisionZoom(container, controls) {
+  let isPrecisionZooming = false;
+
+  const setNormalSpeed = () => {
+    controls.dollySpeed = NORMAL_DOLLY_SPEED;
+  };
+
+  const handleKeyDown = (event) => {
+    if (isTypingTarget(event.target)) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key.toLowerCase() !== "z") return;
+
+    isPrecisionZooming = true;
+  };
+
+  const handleKeyUp = (event) => {
+    if (event.key.toLowerCase() !== "z") return;
+
+    isPrecisionZooming = false;
+    setNormalSpeed();
+  };
+
+  const handleBlur = () => {
+    isPrecisionZooming = false;
+    setNormalSpeed();
+  };
+
+  const handleWheel = () => {
+    controls.dollySpeed = isPrecisionZooming
+      ? PRECISION_DOLLY_SPEED
+      : NORMAL_DOLLY_SPEED;
+  };
+
+  window.addEventListener("keydown", handleKeyDown);
+  window.addEventListener("keyup", handleKeyUp);
+  window.addEventListener("blur", handleBlur);
+  container.addEventListener("wheel", handleWheel, { capture: true });
+
+  setNormalSpeed();
+}
+
 export async function setupWorld(container) {
   const components = new OBC.Components();
 
@@ -20,7 +73,7 @@ export async function setupWorld(container) {
 
   await world.camera.controls.setLookAt(12, 10, 8, 0, 0, 0);
 
-  world.camera.controls.dollySpeed = 0.3;
+  setupPrecisionZoom(container, world.camera.controls);
 
   world.camera.set("Orbit");
   world.camera.setUserInput(true);
