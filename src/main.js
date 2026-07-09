@@ -583,6 +583,44 @@ ui.assignStageButton.addEventListener("click", async () => {
   console.log("Staging state:", staging.debugState());
 });
 
+ui.assignStageZeroButton?.addEventListener("click", async () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before assigning Stage 0.");
+    return;
+  }
+
+  const currentSelection = selection.getSelectedItem();
+  const selectedManualIds = manualElements?.getSelectedIds?.() ?? [];
+
+  if (isModelIdMapEmpty(currentSelection) && selectedManualIds.length === 0) {
+    setStatus("Select elements before assigning Stage 0.");
+    return;
+  }
+
+  const ifcResult = isModelIdMapEmpty(currentSelection)
+    ? { ok: true }
+    : staging.assignSelectionToStageZero(currentSelection);
+  const manualResult =
+    selectedManualIds.length === 0
+      ? { ok: true }
+      : staging.assignManualSelectionToStageZero(selectedManualIds);
+
+  if (!ifcResult.ok || !manualResult.ok) {
+    setStatus(
+      `Stage 0 assignment failed: ${ifcResult.reason ?? manualResult.reason}`
+    );
+    return;
+  }
+
+  renderStagingUI();
+  await showCurrentSliderStage();
+  await selection.clearSelection();
+  manualElements?.clearSelection?.();
+
+  setStatus("Assigned selection to Stage 0 baseline.");
+  console.log("Staging state:", staging.debugState());
+});
+
 ui.createLiftButton.addEventListener("click", async () => {
   if (isPdfExporting) {
     setStatus("Wait for PDF export to finish before creating lifts.");
@@ -2037,11 +2075,13 @@ function subtractManyModelIdMaps(allItems, mapsToRemove) {
 
 function assertExportBucketsCoverAllGeometry({
   allGeometryItems,
+  stageZeroGeometryItems,
   currentGeometryItems,
   previousOnlyItems,
   remainderItems,
 }) {
   const combinedExportItems = mergeModelIdMaps(
+    stageZeroGeometryItems,
     currentGeometryItems,
     previousOnlyItems,
     remainderItems
@@ -2090,10 +2130,10 @@ function getPreviousStageManualItems(stageId) {
   );
 
   if (targetIndex === -1) {
-    return new Set();
+    return new Set(staging.getStageZeroManualSelection?.() ?? []);
   }
 
-  const ids = new Set();
+  const ids = new Set(staging.getStageZeroManualSelection?.() ?? []);
 
   for (const stage of debugState.stages.slice(0, targetIndex)) {
     for (const id of stage.manualItems ?? []) {
@@ -2119,6 +2159,7 @@ function unionIdSets(...sets) {
 function createPdfExportBuckets({
   stageId,
   allGeometryItems,
+  stageZeroGeometryItems = {},
   currentGeometryItems,
   previousGeometryItems,
   unresolvedCurrentItems = {},
@@ -2127,18 +2168,24 @@ function createPdfExportBuckets({
   rawPreviousItems = {},
 }) {
   // Current stage should visually win over previous stages.
-  const previousOnlyItems = subtractModelIdMap(
-    previousGeometryItems,
+  const stageZeroOnlyItems = subtractModelIdMap(
+    stageZeroGeometryItems,
     currentGeometryItems
   );
+  const previousOnlyItems = subtractManyModelIdMaps(previousGeometryItems, [
+    currentGeometryItems,
+    stageZeroOnlyItems,
+  ]);
 
   const remainderItems = subtractManyModelIdMaps(allGeometryItems, [
+    stageZeroOnlyItems,
     previousOnlyItems,
     currentGeometryItems,
   ]);
 
   const exportBucketsCoverAllGeometry = assertExportBucketsCoverAllGeometry({
     allGeometryItems,
+    stageZeroGeometryItems: stageZeroOnlyItems,
     currentGeometryItems,
     previousOnlyItems,
     remainderItems,
@@ -2146,6 +2193,7 @@ function createPdfExportBuckets({
 
   const bucketCounts = {
     allGeometry: countItemsInModelIdMap(allGeometryItems),
+    stageZero: countItemsInModelIdMap(stageZeroOnlyItems),
     current: countItemsInModelIdMap(currentGeometryItems),
     previous: countItemsInModelIdMap(previousOnlyItems),
     remainder: countItemsInModelIdMap(remainderItems),
@@ -2165,6 +2213,7 @@ function createPdfExportBuckets({
     rawPreviousItems,
     currentGeometryItems,
     previousGeometryItems,
+    stageZeroOnlyItems,
     previousOnlyItems,
     remainderItems,
     unresolvedCurrentItems,
@@ -2184,6 +2233,7 @@ function createPdfExportBuckets({
 
   return {
     allGeometryItems,
+    stageZeroGeometryItems: stageZeroOnlyItems,
     currentGeometryItems,
     previousOnlyItems,
     remainderItems,
@@ -2197,6 +2247,7 @@ async function buildPdfExportBuckets(stageId, fragmentsManager = fragments) {
   const allGeometryItems = await getProjectGeometryItems(fragmentsManager);
 
   const rawCurrentItems = staging.getStageSelection(stageId);
+  const rawStageZeroItems = staging.getStageZeroSelection?.() ?? {};
   const rawPreviousItems = getPreviousStageItems(stageId);
 
   const {
@@ -2216,10 +2267,18 @@ async function buildPdfExportBuckets(stageId, fragmentsManager = fragments) {
     allGeometryItems,
     fragmentsManager
   );
+  const {
+    resolved: stageZeroGeometryItems,
+  } = await resolveSelectionToGeometryItems(
+    rawStageZeroItems,
+    allGeometryItems,
+    fragmentsManager
+  );
 
   return createPdfExportBuckets({
     stageId,
     allGeometryItems,
+    stageZeroGeometryItems,
     currentGeometryItems,
     previousGeometryItems,
     unresolvedCurrentItems,
@@ -2233,6 +2292,13 @@ async function buildPdfExportPlan(stages, fragmentsManager = fragments) {
   const allGeometryItems = await getProjectGeometryItems(fragmentsManager);
   const resolvedStageItems = new Map();
   const unresolvedStageItems = new Map();
+  const {
+    resolved: resolvedStageZeroItems,
+  } = await resolveSelectionToGeometryItems(
+    staging.getStageZeroSelection?.() ?? {},
+    allGeometryItems,
+    fragmentsManager
+  );
 
   for (const stage of stages) {
     const { resolved, unresolved } = await resolveSelectionToGeometryItems(
@@ -2255,6 +2321,7 @@ async function buildPdfExportPlan(stages, fragmentsManager = fragments) {
     const buckets = createPdfExportBuckets({
       stageId: stage.id,
       allGeometryItems,
+      stageZeroGeometryItems: resolvedStageZeroItems,
       currentGeometryItems,
       previousGeometryItems,
       unresolvedCurrentItems: unresolvedStageItems.get(stage.id) ?? {},
@@ -2315,11 +2382,24 @@ async function setColorForItems(
 async function applyPdfExportHighlightStyles({
   context,
   stage,
+  stageZeroGeometryItems = {},
   currentGeometryItems,
   previousOnlyItems,
   fragmentsManager = fragments,
 }) {
   await fragmentsManager.resetHighlight?.();
+
+  const stageZeroApplied = await setColorForItems(
+    stageZeroGeometryItems,
+    PDF_EXPORT_COLORS.context,
+    {
+      update: false,
+      context,
+      stage,
+      bucketName: "stage-zero-grey-fragment-highlight",
+      fragmentsManager,
+    }
+  );
 
   const previousApplied = await setColorForItems(
     previousOnlyItems,
@@ -2351,16 +2431,19 @@ async function applyPdfExportHighlightStyles({
     stageId: stage?.id,
     stageName: stage?.name,
     applied: {
+      stageZero: stageZeroApplied,
       previous: previousApplied,
       current: currentApplied,
     },
     itemCounts: {
+      stageZero: countItemsInModelIdMap(stageZeroGeometryItems),
       previous: countItemsInModelIdMap(previousOnlyItems),
       current: countItemsInModelIdMap(currentGeometryItems),
     },
   });
 
   return {
+    stageZeroApplied,
     previousApplied,
     currentApplied,
   };
@@ -2396,13 +2479,29 @@ function logFailedPdfColorBuckets({
 async function applyPdfExportBucketStyles({
   context,
   stage,
+  stageZeroGeometryItems = {},
   currentGeometryItems,
   previousOnlyItems,
   bucketCounts,
   fragmentsManager = fragments,
 }) {
+  let stageZeroApplied = true;
   let previousApplied = true;
   let currentApplied = true;
+
+  const applyStageZero = async () => {
+    stageZeroApplied = await setColorForItems(
+      stageZeroGeometryItems,
+      PDF_EXPORT_COLORS.context,
+      {
+        update: false,
+        context,
+        stage,
+        bucketName: "stage-zero-grey",
+        fragmentsManager,
+      }
+    );
+  };
 
   const applyPrevious = async () => {
     previousApplied = await setColorForItems(
@@ -2435,6 +2534,7 @@ async function applyPdfExportBucketStyles({
   // Grey context is now produced as an image-processing layer after capturing
   // the full model. Do not colour or fade future/remainder fragment items here:
   // large context buckets can overflow Fragments memory.
+  await applyStageZero();
   await applyPrevious();
   await applyCurrent();
 
@@ -2442,6 +2542,7 @@ async function applyPdfExportBucketStyles({
     context,
     stage,
     bucketResults: {
+      stageZero: stageZeroApplied,
       previous: previousApplied,
       current: currentApplied,
     },
@@ -2454,6 +2555,7 @@ async function applyPdfExportBucketStyles({
     contextMode: "light-grey",
     bucketCounts,
     applied: {
+      stageZero: stageZeroApplied,
       previous: previousApplied,
       current: currentApplied,
     },
@@ -2846,6 +2948,7 @@ async function applyPdfExportVisualState(
   const stageId = stage.id;
 
   const {
+    stageZeroGeometryItems,
     currentGeometryItems,
     previousOnlyItems,
     bucketCounts,
@@ -2870,6 +2973,7 @@ async function applyPdfExportVisualState(
   await applyPdfExportBucketStyles({
     context,
     stage,
+    stageZeroGeometryItems,
     currentGeometryItems,
     previousOnlyItems,
     bucketCounts,
@@ -2976,6 +3080,10 @@ async function showCurrentSliderStage() {
     removedItems
   );
   const manualIdsToShow = staging.getActiveStageManualSelection() ?? new Set();
+  const stageZeroItemsToShow = subtractModelIdMap(
+    staging.getStageZeroSelection?.() ?? {},
+    removedItems
+  );
 
   console.log("showCurrentSliderStage mode:", mode);
   console.log("showCurrentSliderStage stage:", stage);
@@ -3012,6 +3120,7 @@ async function showCurrentSliderStage() {
         await hider.isolate(itemsToShow);
       }
       await applyRemovedItemsVisibility({ hider, update: false });
+      await setOpacityForItems(stageZeroItemsToShow, 0.22);
       manualElements?.setVisibleIds?.(manualIdsToShow);
       await fragments.core.update(true);
       await updateLiftLabelsForCurrentView();
@@ -3035,6 +3144,7 @@ async function showCurrentSliderStage() {
     if (!opacityApplied) {
       await resetAllOpacity();
     }
+    await setOpacityForItems(stageZeroItemsToShow, 0.22);
 
     manualElements?.showWithContext?.(
       manualIdsToShow,
@@ -3113,12 +3223,25 @@ function updateStageLabel(stage, index, total) {
 }
 
 function renderStageSummary(stages) {
+  const stageZeroSummary = staging.getStageZeroSummary?.() ?? { itemCount: 0 };
+  const stageZeroHtml =
+    stageZeroSummary.itemCount > 0
+      ? `
+        <div class="stage-summary-block stage-zero-summary-block">
+          <div class="stage-summary-row">
+            Stage 0: Existing / poured concrete (${stageZeroSummary.itemCount} items)
+          </div>
+        </div>
+      `
+      : "";
+
   if (stages.length === 0) {
-    ui.stageSummary.innerHTML = "<p>No stages created yet.</p>";
+    ui.stageSummary.innerHTML =
+      stageZeroHtml || "<p>No stages created yet.</p>";
     return;
   }
 
-  ui.stageSummary.innerHTML = stages
+  ui.stageSummary.innerHTML = stageZeroHtml + stages
     .map((stage, index) => {
       const liftsHtml =
         stage.lifts.length > 0
@@ -3175,7 +3298,7 @@ function renderStageSummary(stages) {
 }
 
 function mergeAllStageItems() {
-  const merged = {};
+  const merged = cloneModelIdMap(staging.getStageZeroSelection?.() ?? {});
   const debugState = staging.debugState();
 
   for (const stage of debugState.stages) {
@@ -3194,7 +3317,7 @@ function mergeAllStageItems() {
 }
 
 function mergeAllStageManualItems() {
-  const merged = new Set();
+  const merged = new Set(staging.getStageZeroManualSelection?.() ?? []);
   const debugState = staging.debugState();
 
   for (const stage of debugState.stages) {
@@ -3803,11 +3926,13 @@ async function captureStageSheetData(
   const hider = components.get(OBC.Hider);
   const buckets = visualState?.buckets ?? (await buildPdfExportBuckets(stage.id));
   const {
+    stageZeroGeometryItems,
     currentGeometryItems,
     previousOnlyItems,
     bucketCounts,
   } = buckets;
   const foregroundItems = mergeModelIdMaps(
+    stageZeroGeometryItems,
     previousOnlyItems,
     currentGeometryItems
   );
@@ -3877,6 +4002,7 @@ async function captureStageSheetData(
   await applyPdfExportHighlightStyles({
     context,
     stage,
+    stageZeroGeometryItems,
     currentGeometryItems,
     previousOnlyItems,
     fragmentsManager,

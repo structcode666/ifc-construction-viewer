@@ -1,10 +1,11 @@
 import * as THREE from "three";
-import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 
 const DEFAULT_CONCRETE_COLOR = "#9ca3af";
 const SELECTED_CONCRETE_COLOR = "#d1d5db";
+const CONCRETE_OPACITY = 0.36;
 const MIN_FOOTPRINT_SIZE = 0.1;
 const MIN_POINTER_DRAG_PX = 6;
+const HANDLE_SIZE = 0.32;
 
 export function createManualElementManager({
   world,
@@ -49,38 +50,20 @@ export function createManualElementManager({
   selectedMaterial.color = new THREE.Color(SELECTED_CONCRETE_COLOR);
   selectedMaterial.emissive = new THREE.Color("#111827");
   selectedMaterial.emissiveIntensity = 0.08;
+  selectedMaterial.transparent = true;
+  selectedMaterial.opacity = Math.min(CONCRETE_OPACITY + 0.16, 0.72);
+  selectedMaterial.depthWrite = false;
 
   const elements = new Map();
   const selectedIds = new Set();
+  const resizeHandles = [];
   let drawEnabled = false;
   let drawing = null;
   let pointerDown = null;
+  let moving = null;
+  let resizing = null;
 
-  const transformControls = new TransformControls(
-    world.camera.three,
-    world.renderer.three.domElement
-  );
-  transformControls.name = "Manual concrete move controls";
-  transformControls.setMode("translate");
-  transformControls.setSpace("world");
-  transformControls.size = 0.85;
-  transformControls.visible = false;
-  world.scene.three.add(transformControls);
-
-  transformControls.addEventListener("dragging-changed", (event) => {
-    world.camera.setUserInput(!event.value);
-
-    if (!event.value) {
-      syncSelectedElementFromMesh();
-      onElementChanged();
-      requestRender();
-    }
-  });
-
-  transformControls.addEventListener("objectChange", () => {
-    syncSelectedElementFromMesh();
-    requestRender();
-  });
+  createResizeHandles();
 
   function requestRender() {
     world.renderer.three.render(world.scene.three, world.camera.three);
@@ -204,7 +187,7 @@ export function createManualElementManager({
     const { center, size } = getBoxFromFootprint(start, end, height);
     const id = `manual-${crypto.randomUUID()}`;
     const geometry = new THREE.BoxGeometry(size.x, size.y, size.z);
-    const mesh = new THREE.Mesh(geometry, concreteMaterial.clone());
+    const mesh = new THREE.Mesh(geometry, createConcreteMaterial());
 
     mesh.name = `Concrete element ${elements.size + 1}`;
     mesh.position.copy(center);
@@ -255,7 +238,7 @@ export function createManualElementManager({
       Math.max(size.y, MIN_FOOTPRINT_SIZE),
       Math.max(size.z, MIN_FOOTPRINT_SIZE)
     );
-    const mesh = new THREE.Mesh(geometry, concreteMaterial.clone());
+    const mesh = new THREE.Mesh(geometry, createConcreteMaterial());
 
     mesh.name = data.name || `Concrete element ${elements.size + 1}`;
     mesh.position.copy(position);
@@ -288,6 +271,15 @@ export function createManualElementManager({
     return element;
   }
 
+  function createConcreteMaterial() {
+    const material = concreteMaterial.clone();
+    material.transparent = true;
+    material.opacity = CONCRETE_OPACITY;
+    material.depthWrite = false;
+
+    return material;
+  }
+
   function syncSelectedElementFromMesh() {
     for (const id of selectedIds) {
       const element = elements.get(id);
@@ -307,18 +299,13 @@ export function createManualElementManager({
 
       selectedIds.add(id);
       element.mesh.material = selectedMaterial.clone();
+      setElementOpacity(element, Math.min(CONCRETE_OPACITY + 0.16, 0.72));
     }
 
     const [firstSelectedId] = selectedIds;
     const firstSelected = firstSelectedId ? elements.get(firstSelectedId) : null;
 
-    if (firstSelected) {
-      transformControls.attach(firstSelected.mesh);
-      transformControls.visible = true;
-    } else {
-      transformControls.detach();
-      transformControls.visible = false;
-    }
+    updateResizeHandles(firstSelected);
 
     onSelectionChanged(getSelectedIds());
     requestRender();
@@ -328,7 +315,7 @@ export function createManualElementManager({
     for (const id of selectedIds) {
       const element = elements.get(id);
       if (!element) continue;
-      element.mesh.material = concreteMaterial.clone();
+      element.mesh.material = createConcreteMaterial();
     }
   }
 
@@ -336,11 +323,23 @@ export function createManualElementManager({
     selectIds([]);
   }
 
-  function pickElement(event) {
+  function setPointerFromEvent(event) {
     const rect = container.getBoundingClientRect();
     pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     raycaster.setFromCamera(pointer, world.camera.three);
+  }
+
+  function pickResizeHandle(event) {
+    setPointerFromEvent(event);
+
+    const hits = raycaster.intersectObjects(resizeHandles, false);
+
+    return hits[0]?.object ?? null;
+  }
+
+  function pickElement(event) {
+    setPointerFromEvent(event);
 
     const hits = raycaster.intersectObjects(
       [...elements.values()].map((element) => element.mesh),
@@ -348,6 +347,91 @@ export function createManualElementManager({
     );
 
     return hits[0]?.object?.userData?.manualElementId ?? null;
+  }
+
+  function createResizeHandles() {
+    const directions = [
+      { axis: "x", sign: 1, direction: new THREE.Vector3(1, 0, 0) },
+      { axis: "x", sign: -1, direction: new THREE.Vector3(-1, 0, 0) },
+      { axis: "y", sign: 1, direction: new THREE.Vector3(0, 1, 0) },
+      { axis: "y", sign: -1, direction: new THREE.Vector3(0, -1, 0) },
+      { axis: "z", sign: 1, direction: new THREE.Vector3(0, 0, 1) },
+      { axis: "z", sign: -1, direction: new THREE.Vector3(0, 0, -1) },
+    ];
+    const handleMaterial = new THREE.MeshBasicMaterial({
+      color: "#38bdf8",
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+    });
+
+    for (const config of directions) {
+      const geometry = new THREE.ConeGeometry(
+        HANDLE_SIZE * 0.42,
+        HANDLE_SIZE,
+        16
+      );
+      const mesh = new THREE.Mesh(geometry, handleMaterial.clone());
+      mesh.name = `Concrete resize ${config.axis}${config.sign > 0 ? "+" : "-"}`;
+      mesh.userData.resizeHandle = config;
+      mesh.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 1, 0),
+        config.direction
+      );
+      mesh.visible = false;
+      resizeHandles.push(mesh);
+      group.add(mesh);
+    }
+  }
+
+  function updateResizeHandles(element) {
+    if (!element || !element.mesh.visible) {
+      for (const handle of resizeHandles) {
+        handle.visible = false;
+      }
+      return;
+    }
+
+    const size = plainToVector(element.size, new THREE.Vector3(1, 1, 1));
+    const center = element.mesh.position;
+    const positions = {
+      "x:1": new THREE.Vector3(
+        center.x + size.x / 2 + HANDLE_SIZE * 0.9,
+        center.y,
+        center.z
+      ),
+      "x:-1": new THREE.Vector3(
+        center.x - size.x / 2 - HANDLE_SIZE * 0.9,
+        center.y,
+        center.z
+      ),
+      "y:1": new THREE.Vector3(
+        center.x,
+        center.y + size.y / 2 + HANDLE_SIZE * 0.9,
+        center.z
+      ),
+      "y:-1": new THREE.Vector3(
+        center.x,
+        center.y - size.y / 2 - HANDLE_SIZE * 0.9,
+        center.z
+      ),
+      "z:1": new THREE.Vector3(
+        center.x,
+        center.y,
+        center.z + size.z / 2 + HANDLE_SIZE * 0.9
+      ),
+      "z:-1": new THREE.Vector3(
+        center.x,
+        center.y,
+        center.z - size.z / 2 - HANDLE_SIZE * 0.9
+      ),
+    };
+
+    for (const handle of resizeHandles) {
+      const { axis, sign } = handle.userData.resizeHandle;
+      handle.position.copy(positions[`${axis}:${sign}`]);
+      handle.visible = true;
+    }
   }
 
   function removePreview() {
@@ -388,19 +472,17 @@ export function createManualElementManager({
       element.mesh.visible = visibleIds.has(element.id);
     }
 
-    transformControls.visible =
-      selectedIds.size > 0 &&
-      [...selectedIds].some((id) => elements.get(id)?.mesh.visible);
+    updateResizeHandles(getFirstSelectedElement());
     requestRender();
   }
 
   function showAll() {
     for (const element of elements.values()) {
       element.mesh.visible = true;
-      setElementOpacity(element, 1);
+      setElementOpacity(element, CONCRETE_OPACITY);
     }
 
-    transformControls.visible = selectedIds.size > 0;
+    updateResizeHandles(getFirstSelectedElement());
     requestRender();
   }
 
@@ -418,12 +500,13 @@ export function createManualElementManager({
       const isForeground = foreground.has(element.id);
       const isContext = context.has(element.id);
       element.mesh.visible = isForeground || isContext;
-      setElementOpacity(element, isForeground ? 1 : contextOpacity);
+      setElementOpacity(
+        element,
+        isForeground ? CONCRETE_OPACITY : Math.min(contextOpacity, 0.18)
+      );
     }
 
-    transformControls.visible =
-      selectedIds.size > 0 &&
-      [...selectedIds].some((id) => elements.get(id)?.mesh.visible);
+    updateResizeHandles(getFirstSelectedElement());
     requestRender();
   }
 
@@ -450,9 +533,13 @@ export function createManualElementManager({
   }
 
   function clear() {
-    transformControls.detach();
-    transformControls.visible = false;
     selectedIds.clear();
+    moving = null;
+    resizing = null;
+
+    for (const handle of resizeHandles) {
+      handle.visible = false;
+    }
 
     for (const element of elements.values()) {
       group.remove(element.mesh);
@@ -480,6 +567,12 @@ export function createManualElementManager({
     return selectedIds.size > 0;
   }
 
+  function getFirstSelectedElement() {
+    const [firstSelectedId] = selectedIds;
+
+    return firstSelectedId ? elements.get(firstSelectedId) ?? null : null;
+  }
+
   function setDrawEnabled(enabled) {
     drawEnabled = Boolean(enabled);
 
@@ -493,7 +586,194 @@ export function createManualElementManager({
   }
 
   function isPointerInteractionActive() {
-    return drawEnabled || Boolean(drawing) || transformControls.dragging;
+    return drawEnabled || Boolean(drawing) || Boolean(moving) || Boolean(resizing);
+  }
+
+  function createAxisDragPlane(axisVector) {
+    const cameraDirection = new THREE.Vector3();
+    world.camera.three.getWorldDirection(cameraDirection);
+
+    let normal = new THREE.Vector3().crossVectors(axisVector, cameraDirection);
+
+    if (normal.lengthSq() < 0.0001) {
+      normal = new THREE.Vector3().crossVectors(
+        axisVector,
+        world.camera.three.up
+      );
+    }
+
+    normal.normalize();
+
+    return normal;
+  }
+
+  function getPointOnPlane(event, plane, target = new THREE.Vector3()) {
+    setPointerFromEvent(event);
+
+    return raycaster.ray.intersectPlane(plane, target);
+  }
+
+  function startMoving(event, elementId) {
+    const element = elements.get(elementId);
+    const point = getGroundPoint(event, new THREE.Vector3());
+
+    if (!element || !point) return false;
+
+    moving = {
+      pointerId: event.pointerId,
+      element,
+      startPoint: point.clone(),
+      startPosition: element.mesh.position.clone(),
+    };
+
+    container.setPointerCapture(event.pointerId);
+    world.camera.setUserInput(false);
+    container.classList.add("is-moving-concrete");
+
+    return true;
+  }
+
+  function updateMoving(event) {
+    if (!moving || event.pointerId !== moving.pointerId) return;
+
+    const point = getGroundPoint(event, new THREE.Vector3());
+    if (!point) return;
+
+    const delta = point.clone().sub(moving.startPoint);
+    moving.element.mesh.position.set(
+      moving.startPosition.x + delta.x,
+      moving.startPosition.y,
+      moving.startPosition.z + delta.z
+    );
+    moving.element.position = vectorToPlain(moving.element.mesh.position);
+    updateResizeHandles(moving.element);
+    requestRender();
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  function finishMoving(event) {
+    if (!moving || event.pointerId !== moving.pointerId) return;
+
+    moving.element.position = vectorToPlain(moving.element.mesh.position);
+    moving = null;
+    world.camera.setUserInput(true);
+    container.classList.remove("is-moving-concrete");
+
+    if (container.hasPointerCapture(event.pointerId)) {
+      container.releasePointerCapture(event.pointerId);
+    }
+
+    onElementChanged();
+    requestRender();
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  function startResizing(event, handle) {
+    const element = getFirstSelectedElement();
+
+    if (!element) return false;
+
+    const { axis, sign } = handle.userData.resizeHandle;
+    const axisVector = new THREE.Vector3(
+      axis === "x" ? 1 : 0,
+      axis === "y" ? 1 : 0,
+      axis === "z" ? 1 : 0
+    );
+    const planeNormal = createAxisDragPlane(axisVector);
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+      planeNormal,
+      handle.position
+    );
+    const startPoint = getPointOnPlane(event, plane, new THREE.Vector3());
+
+    if (!startPoint) return false;
+
+    resizing = {
+      pointerId: event.pointerId,
+      element,
+      axis,
+      sign,
+      axisVector,
+      plane,
+      startPoint: startPoint.clone(),
+      startSize: plainToVector(element.size, new THREE.Vector3(1, 1, 1)),
+      startPosition: element.mesh.position.clone(),
+    };
+
+    container.setPointerCapture(event.pointerId);
+    world.camera.setUserInput(false);
+    container.classList.add("is-resizing-concrete");
+
+    return true;
+  }
+
+  function updateElementGeometry(element, size) {
+    const mesh = element.mesh;
+    const nextGeometry = new THREE.BoxGeometry(size.x, size.y, size.z);
+    const edges = mesh.children[0];
+
+    mesh.geometry.dispose();
+    mesh.geometry = nextGeometry;
+
+    if (edges) {
+      edges.geometry.dispose();
+      edges.geometry = new THREE.EdgesGeometry(nextGeometry);
+    }
+
+    element.size = vectorToPlain(size);
+    element.position = vectorToPlain(mesh.position);
+  }
+
+  function updateResizing(event) {
+    if (!resizing || event.pointerId !== resizing.pointerId) return;
+
+    const point = getPointOnPlane(event, resizing.plane, new THREE.Vector3());
+    if (!point) return;
+
+    const delta = point.clone().sub(resizing.startPoint).dot(resizing.axisVector);
+    const sizeChange = resizing.sign * delta;
+    const nextSize = resizing.startSize.clone();
+    nextSize[resizing.axis] = Math.max(
+      MIN_FOOTPRINT_SIZE,
+      resizing.startSize[resizing.axis] + sizeChange
+    );
+
+    const actualChange = nextSize[resizing.axis] - resizing.startSize[resizing.axis];
+    const nextPosition = resizing.startPosition.clone();
+    nextPosition.add(
+      resizing.axisVector
+        .clone()
+        .multiplyScalar((resizing.sign * actualChange) / 2)
+    );
+
+    resizing.element.mesh.position.copy(nextPosition);
+    updateElementGeometry(resizing.element, nextSize);
+    updateResizeHandles(resizing.element);
+    requestRender();
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  function finishResizing(event) {
+    if (!resizing || event.pointerId !== resizing.pointerId) return;
+
+    resizing.element.position = vectorToPlain(resizing.element.mesh.position);
+    resizing = null;
+    world.camera.setUserInput(true);
+    container.classList.remove("is-resizing-concrete");
+
+    if (container.hasPointerCapture(event.pointerId)) {
+      container.releasePointerCapture(event.pointerId);
+    }
+
+    onElementChanged();
+    requestRender();
+    event.preventDefault();
+    event.stopImmediatePropagation();
   }
 
   function onPointerDown(event) {
@@ -504,7 +784,29 @@ export function createManualElementManager({
       clientY: event.clientY,
     };
 
-    if (!drawEnabled) return;
+    if (!drawEnabled) {
+      const pickedHandle = pickResizeHandle(event);
+
+      if (pickedHandle && startResizing(event, pickedHandle)) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+
+      const pickedId = pickElement(event);
+
+      if (!pickedId) return;
+
+      selectIds([pickedId]);
+
+      if (startMoving(event, pickedId)) {
+        onStatus("Concrete element selected. Drag to move or use arrows to resize.");
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
+
+      return;
+    }
 
     const start = getGroundPoint(event, new THREE.Vector3());
     if (!start) return;
@@ -524,6 +826,16 @@ export function createManualElementManager({
   }
 
   function onPointerMove(event) {
+    if (moving) {
+      updateMoving(event);
+      return;
+    }
+
+    if (resizing) {
+      updateResizing(event);
+      return;
+    }
+
     if (!drawing || event.pointerId !== drawing.pointerId) return;
 
     const current = getGroundPoint(event, new THREE.Vector3());
@@ -552,7 +864,7 @@ export function createManualElementManager({
         finishedDrawing.current,
         getElementHeight()
       );
-      onStatus("Concrete element created. Use the arrows to move it.");
+      onStatus("Concrete element created. Drag it to move or drag arrows to resize.");
     } else {
       onStatus("Drag a footprint to create a concrete element.");
     }
@@ -562,6 +874,18 @@ export function createManualElementManager({
   }
 
   function onPointerUp(event) {
+    if (moving) {
+      finishMoving(event);
+      pointerDown = null;
+      return;
+    }
+
+    if (resizing) {
+      finishResizing(event);
+      pointerDown = null;
+      return;
+    }
+
     if (drawing && event.pointerId === drawing.pointerId) {
       finishDrawing(event);
       pointerDown = null;
@@ -575,23 +899,26 @@ export function createManualElementManager({
       return;
     }
 
-    if (getPointerDistance(event) > MIN_POINTER_DRAG_PX) {
+    pointerDown = null;
+  }
+
+  function onPointerCancel(event) {
+    if (moving && event.pointerId === moving.pointerId) {
+      moving = null;
+      world.camera.setUserInput(true);
+      container.classList.remove("is-moving-concrete");
       pointerDown = null;
       return;
     }
 
-    const pickedId = pickElement(event);
-    pointerDown = null;
+    if (resizing && event.pointerId === resizing.pointerId) {
+      resizing = null;
+      world.camera.setUserInput(true);
+      container.classList.remove("is-resizing-concrete");
+      pointerDown = null;
+      return;
+    }
 
-    if (!pickedId) return;
-
-    selectIds([pickedId]);
-    onStatus("Concrete element selected. Use the arrows to move it.");
-    event.preventDefault();
-    event.stopImmediatePropagation();
-  }
-
-  function onPointerCancel(event) {
     if (!drawing || event.pointerId !== drawing.pointerId) return;
 
     removePreview();

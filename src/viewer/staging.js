@@ -1,6 +1,8 @@
 export function createStagingManager() {
   const state = {
     stages: [],
+    stageZeroItems: {},
+    stageZeroManualItems: new Set(),
     activeStageId: null,
     viewMode: "single", // "single" or "cumulative"
   };
@@ -136,6 +138,12 @@ export function createStagingManager() {
     }
   }
 
+  function removeSelectionFromStageZero(selection) {
+    if (isSelectionEmpty(selection)) return;
+
+    removeModelIdMapFromStageItems(state.stageZeroItems, selection);
+  }
+
   function removeManualIdsFromSet(targetIds, idsToRemove) {
     if (!targetIds || isIdSetEmpty(idsToRemove)) return;
 
@@ -160,6 +168,10 @@ export function createStagingManager() {
     for (const stage of state.stages) {
       removeManualIdsFromSet(stage.manualItems, ids);
     }
+  }
+
+  function removeManualIdsFromStageZero(ids) {
+    removeManualIdsFromSet(state.stageZeroManualItems, ids);
   }
 
   function createStage(name) {
@@ -353,10 +365,24 @@ export function createStagingManager() {
     // So before adding selection to this stage,
     // remove it from every other stage.
     removeSelectionFromAllStages(selection);
+    removeSelectionFromStageZero(selection);
 
     stage.items = mergeModelIdMaps(stage.items, selection);
 
     return { ok: true, stage };
+  }
+
+  function assignSelectionToStageZero(selection) {
+    if (isSelectionEmpty(selection)) {
+      return { ok: false, reason: "Selection is empty." };
+    }
+
+    removeSelectionFromAllStages(selection);
+    removeSelectionFromAllLifts(selection);
+
+    state.stageZeroItems = mergeModelIdMaps(state.stageZeroItems, selection);
+
+    return { ok: true };
   }
 
   function assignManualSelectionToStage(stageId, manualIds) {
@@ -377,12 +403,30 @@ export function createStagingManager() {
     }
 
     removeManualIdsFromAllStages(ids);
+    removeManualIdsFromStageZero(ids);
 
     for (const id of ids) {
       stage.manualItems.add(id);
     }
 
     return { ok: true, stage };
+  }
+
+  function assignManualSelectionToStageZero(manualIds) {
+    const ids = cloneIdSet(manualIds);
+
+    if (isIdSetEmpty(ids)) {
+      return { ok: false, reason: "Manual selection is empty." };
+    }
+
+    removeManualIdsFromAllStages(ids);
+    removeManualIdsFromAllLifts(ids);
+
+    for (const id of ids) {
+      state.stageZeroManualItems.add(id);
+    }
+
+    return { ok: true };
   }
 
   function removeManualElements(manualIds) {
@@ -394,6 +438,7 @@ export function createStagingManager() {
 
     removeManualIdsFromAllStages(ids);
     removeManualIdsFromAllLifts(ids);
+    removeManualIdsFromStageZero(ids);
   }
 
   function createLiftFromSelection(stageId, selection, manualIds = []) {
@@ -489,6 +534,10 @@ export function createStagingManager() {
     return cloneModelIdMap(stage.items);
   }
 
+  function getStageZeroSelection() {
+    return cloneModelIdMap(state.stageZeroItems);
+  }
+
   function getStageManualSelection(stageId) {
     const stage = getStageById(stageId);
     if (!stage) return null;
@@ -496,8 +545,12 @@ export function createStagingManager() {
     return cloneIdSet(stage.manualItems);
   }
 
+  function getStageZeroManualSelection() {
+    return cloneIdSet(state.stageZeroManualItems);
+  }
+
   function getCumulativeSelection(stageId) {
-    const cumulative = {};
+    const cumulative = cloneModelIdMap(state.stageZeroItems);
     const targetIndex = state.stages.findIndex((stage) => stage.id === stageId);
 
     if (targetIndex === -1) return null;
@@ -511,7 +564,7 @@ export function createStagingManager() {
   }
 
   function getCumulativeManualSelection(stageId) {
-    const cumulative = new Set();
+    const cumulative = cloneIdSet(state.stageZeroManualItems);
     const targetIndex = state.stages.findIndex((stage) => stage.id === stageId);
 
     if (targetIndex === -1) return null;
@@ -604,6 +657,14 @@ export function createStagingManager() {
     }));
   }
 
+  function getStageZeroSummary() {
+    return {
+      itemCount:
+        countItemsInModelIdMap(state.stageZeroItems) +
+        (state.stageZeroManualItems?.size ?? 0),
+    };
+  }
+
   function countItemsInModelIdMap(modelIdMap) {
     if (!modelIdMap) return 0;
 
@@ -618,9 +679,11 @@ export function createStagingManager() {
 
   function createSnapshot() {
     return {
-      snapshotVersion: 2,
+      snapshotVersion: 3,
       activeStageId: state.activeStageId,
       viewMode: state.viewMode,
+      stageZeroItems: modelIdMapToSerializable(state.stageZeroItems),
+      stageZeroManualItems: idSetToSerializable(state.stageZeroManualItems),
       stages: state.stages.map((stage) => ({
         id: stage.id,
         name: stage.name,
@@ -669,6 +732,11 @@ export function createStagingManager() {
         : [],
     }));
 
+    state.stageZeroItems = serializableToModelIdMap(snapshot.stageZeroItems);
+    state.stageZeroManualItems = serializableToIdSet(
+      snapshot.stageZeroManualItems
+    );
+
     const activeStageExists = state.stages.some(
       (stage) => stage.id === snapshot.activeStageId
     );
@@ -689,6 +757,8 @@ export function createStagingManager() {
     return {
       activeStageId: state.activeStageId,
       viewMode: state.viewMode,
+      stageZeroItems: cloneModelIdMap(state.stageZeroItems),
+      stageZeroManualItems: cloneIdSet(state.stageZeroManualItems),
       stages: state.stages.map((stage) => ({
         id: stage.id,
         name: stage.name,
@@ -779,13 +849,17 @@ export function createStagingManager() {
 
     moveStage,
     assignSelectionToStage,
+    assignSelectionToStageZero,
     assignManualSelectionToStage,
+    assignManualSelectionToStageZero,
     removeManualElements,
     createLiftFromSelection,
     clearStage,
 
     getStageSelection,
+    getStageZeroSelection,
     getStageManualSelection,
+    getStageZeroManualSelection,
     getCumulativeSelection,
     getCumulativeManualSelection,
     setActiveStage,
@@ -799,6 +873,7 @@ export function createStagingManager() {
     debugState,
 
     getActiveStageId,
+    getStageZeroSummary,
     setStageView,
     getStageView,
   };

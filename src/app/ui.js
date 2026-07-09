@@ -17,6 +17,7 @@ export function getUI() {
 
     addStageButton: document.getElementById("add-stage-button"),
     assignStageButton: document.getElementById("assign-stage-button"),
+    assignStageZeroButton: document.getElementById("assign-stage-zero-button"),
     stageSlider: document.getElementById("stage-slider"),
     stageLabel: document.getElementById("stage-label"),
     stageSummary: document.getElementById("stage-summary"),

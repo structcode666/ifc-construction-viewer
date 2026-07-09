@@ -338,6 +338,11 @@ button:disabled {
   margin-top: 0.75rem;
 }
 
+.stage-zero-summary-block {
+  border-color: rgba(100, 116, 139, 0.36);
+  background: rgba(226, 232, 240, 0.82);
+}
+
 .stage-summary-row {
   font-size: 0.88rem;
   font-weight: 800;
@@ -875,6 +880,14 @@ button:disabled {
 
 #viewer-container.is-drawing-concrete {
   cursor: crosshair;
+}
+
+#viewer-container.is-moving-concrete {
+  cursor: grabbing;
+}
+
+#viewer-container.is-resizing-concrete {
+  cursor: ew-resize;
 }
 
 /* =========================
