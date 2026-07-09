@@ -890,6 +890,10 @@ button:disabled {
   cursor: ew-resize;
 }
 
+#viewer-container.is-rotating-concrete {
+  cursor: grab;
+}
+
 /* =========================
    LOADING OVERLAY
 ========================= */

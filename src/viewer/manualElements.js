@@ -3,10 +3,12 @@ import * as THREE from "three";
 const DEFAULT_CONCRETE_COLOR = "#9ca3af";
 const SELECTED_CONCRETE_COLOR = "#d1d5db";
 const CONCRETE_OPACITY = 0.36;
+const PDF_CONCRETE_OPACITY = 0.68;
 const MIN_FOOTPRINT_SIZE = 0.1;
 const MIN_POINTER_DRAG_PX = 6;
 const HANDLE_SIZE = 0.32;
 const MOVE_HANDLE_LENGTH = 1.2;
+const ROTATION_RING_RADIUS_PADDING = 0.8;
 
 export function createManualElementManager({
   world,
@@ -60,17 +62,23 @@ export function createManualElementManager({
   const selectedIds = new Set();
   const resizeHandles = [];
   const moveHandles = [];
+  const rotationHandles = [];
   const snapMarker = createSnapMarker();
+  const snapFeedback = createSnapFeedback();
   let drawEnabled = false;
   let snapEnabled = false;
+  let pdfAppearanceEnabled = false;
   let drawing = null;
   let pointerDown = null;
   let moving = null;
   let resizing = null;
+  let rotating = null;
 
   group.add(snapMarker);
   createMoveHandles();
   createResizeHandles();
+  createRotationHandles();
+  container.appendChild(snapFeedback);
 
   function requestRender() {
     world.renderer.three.render(world.scene.three, world.camera.three);
@@ -221,6 +229,7 @@ export function createManualElementManager({
       type: "box",
       name: mesh.name,
       position: vectorToPlain(center),
+      rotation: quaternionToPlain(mesh.quaternion),
       size: vectorToPlain(size),
       color: DEFAULT_CONCRETE_COLOR,
       mesh,
@@ -251,6 +260,7 @@ export function createManualElementManager({
 
     mesh.name = data.name || `Concrete element ${elements.size + 1}`;
     mesh.position.copy(position);
+    mesh.quaternion.copy(plainToQuaternion(data.rotation));
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.userData.manualElementId = data.id;
@@ -271,6 +281,7 @@ export function createManualElementManager({
       type: "box",
       name: mesh.name,
       position: vectorToPlain(position),
+      rotation: quaternionToPlain(mesh.quaternion),
       size: vectorToPlain(size),
       color: data.color || DEFAULT_CONCRETE_COLOR,
       mesh,
@@ -295,6 +306,7 @@ export function createManualElementManager({
       if (!element) continue;
 
       element.position = vectorToPlain(element.mesh.position);
+      element.rotation = quaternionToPlain(element.mesh.quaternion);
     }
   }
 
@@ -358,6 +370,14 @@ export function createManualElementManager({
       : handle?.parent?.userData?.moveHandle
         ? handle.parent
         : null;
+  }
+
+  function pickRotationHandle(event) {
+    setPointerFromEvent(event);
+
+    const hits = raycaster.intersectObjects(rotationHandles, false);
+
+    return hits[0]?.object ?? null;
   }
 
   function pickElement(event) {
@@ -496,6 +516,50 @@ export function createManualElementManager({
     return sprite;
   }
 
+  function createRotationHandles() {
+    const configs = [
+      {
+        axis: "x",
+        label: "X",
+        direction: new THREE.Vector3(1, 0, 0),
+        color: "#f87171",
+      },
+      {
+        axis: "y",
+        label: "Y",
+        direction: new THREE.Vector3(0, 1, 0),
+        color: "#4ade80",
+      },
+      {
+        axis: "z",
+        label: "Z",
+        direction: new THREE.Vector3(0, 0, 1),
+        color: "#60a5fa",
+      },
+    ];
+
+    for (const config of configs) {
+      const geometry = new THREE.TorusGeometry(1, 0.025, 10, 80);
+      const material = new THREE.MeshBasicMaterial({
+        color: config.color,
+        transparent: true,
+        opacity: 0.82,
+        depthTest: false,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+
+      mesh.name = `Concrete rotate ${config.axis.toUpperCase()}`;
+      mesh.userData.rotationHandle = config;
+      mesh.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 0, 1),
+        config.direction
+      );
+      mesh.visible = false;
+      rotationHandles.push(mesh);
+      group.add(mesh);
+    }
+  }
+
   function createSnapMarker() {
     const marker = new THREE.Mesh(
       new THREE.SphereGeometry(0.12, 16, 16),
@@ -512,14 +576,52 @@ export function createManualElementManager({
     return marker;
   }
 
+  function createSnapFeedback() {
+    const element = document.createElement("div");
+    element.className = "concrete-snap-feedback";
+    element.style.display = "none";
+    element.style.position = "absolute";
+    element.style.left = "50%";
+    element.style.bottom = "1rem";
+    element.style.transform = "translateX(-50%)";
+    element.style.zIndex = "40";
+    element.style.padding = "0.55rem 0.75rem";
+    element.style.borderRadius = "999px";
+    element.style.background = "rgba(15, 23, 42, 0.84)";
+    element.style.color = "#f8fafc";
+    element.style.font = "700 0.76rem Inter, Arial, sans-serif";
+    element.style.pointerEvents = "none";
+    element.style.boxShadow = "0 12px 26px rgba(0, 0, 0, 0.24)";
+
+    return element;
+  }
+
+  function hideSnapFeedback() {
+    snapFeedback.style.display = "none";
+  }
+
+  function showSnapFeedback(message) {
+    snapFeedback.textContent = message;
+    snapFeedback.style.display = "block";
+  }
+
+  function hideAllHandles() {
+    for (const handle of resizeHandles) {
+      handle.visible = false;
+    }
+
+    for (const handle of moveHandles) {
+      handle.visible = false;
+    }
+
+    for (const handle of rotationHandles) {
+      handle.visible = false;
+    }
+  }
+
   function updateResizeHandles(element) {
     if (!element || !element.mesh.visible) {
-      for (const handle of resizeHandles) {
-        handle.visible = false;
-      }
-      for (const handle of moveHandles) {
-        handle.visible = false;
-      }
+      hideAllHandles();
       return;
     }
 
@@ -576,6 +678,15 @@ export function createManualElementManager({
       handle.position.copy(center).add(direction.clone().multiplyScalar(offset));
       handle.visible = true;
     }
+
+    const ringRadius =
+      Math.max(size.x, size.y, size.z) / 2 + ROTATION_RING_RADIUS_PADDING;
+
+    for (const handle of rotationHandles) {
+      handle.position.copy(center);
+      handle.scale.setScalar(ringRadius);
+      handle.visible = true;
+    }
   }
 
   function removePreview() {
@@ -623,7 +734,7 @@ export function createManualElementManager({
   function showAll() {
     for (const element of elements.values()) {
       element.mesh.visible = true;
-      setElementOpacity(element, CONCRETE_OPACITY);
+      setElementOpacity(element, getConcreteOpacity());
     }
 
     updateResizeHandles(getFirstSelectedElement());
@@ -646,7 +757,7 @@ export function createManualElementManager({
       element.mesh.visible = isForeground || isContext;
       setElementOpacity(
         element,
-        isForeground ? CONCRETE_OPACITY : Math.min(contextOpacity, 0.18)
+        isForeground ? getConcreteOpacity() : Math.min(contextOpacity, 0.18)
       );
     }
 
@@ -660,6 +771,7 @@ export function createManualElementManager({
       type: element.type,
       name: element.name,
       position: element.position,
+      rotation: element.rotation,
       size: element.size,
       color: element.color,
     }));
@@ -680,10 +792,11 @@ export function createManualElementManager({
     selectedIds.clear();
     moving = null;
     resizing = null;
+    rotating = null;
 
-    for (const handle of resizeHandles) {
-      handle.visible = false;
-    }
+    hideAllHandles();
+    snapMarker.visible = false;
+    hideSnapFeedback();
 
     for (const element of elements.values()) {
       group.remove(element.mesh);
@@ -738,8 +851,29 @@ export function createManualElementManager({
     }
   }
 
+  function setPdfAppearanceEnabled(enabled) {
+    pdfAppearanceEnabled = Boolean(enabled);
+
+    for (const element of elements.values()) {
+      if (!element.mesh.visible) continue;
+      setElementOpacity(element, getConcreteOpacity());
+    }
+
+    requestRender();
+  }
+
+  function getConcreteOpacity() {
+    return pdfAppearanceEnabled ? PDF_CONCRETE_OPACITY : CONCRETE_OPACITY;
+  }
+
   function isPointerInteractionActive() {
-    return drawEnabled || Boolean(drawing) || Boolean(moving) || Boolean(resizing);
+    return (
+      drawEnabled ||
+      Boolean(drawing) ||
+      Boolean(moving) ||
+      Boolean(resizing) ||
+      Boolean(rotating)
+    );
   }
 
   function createAxisDragPlane(axisVector) {
@@ -766,6 +900,16 @@ export function createManualElementManager({
     return raycaster.ray.intersectPlane(plane, target);
   }
 
+  function createScreenDragPlane(point) {
+    const normal = new THREE.Vector3();
+    world.camera.three.getWorldDirection(normal);
+
+    return new THREE.Plane().setFromNormalAndCoplanarPoint(
+      normal.normalize(),
+      point ?? new THREE.Vector3()
+    );
+  }
+
   function startMoving(event, elementId, moveHandle = null) {
     const element = elements.get(elementId);
     const axisConfig = moveHandle?.userData?.moveHandle ?? null;
@@ -775,10 +919,8 @@ export function createManualElementManager({
           createAxisDragPlane(axisVector),
           moveHandle.position
         )
-      : groundPlane;
-    const point = axisVector
-      ? getPointOnPlane(event, plane, new THREE.Vector3())
-      : getGroundPoint(event, new THREE.Vector3());
+      : createScreenDragPlane(element?.mesh?.position);
+    const point = getPointOnPlane(event, plane, new THREE.Vector3());
 
     if (!element || !point) return false;
 
@@ -806,9 +948,7 @@ export function createManualElementManager({
   function updateMoving(event) {
     if (!moving || event.pointerId !== moving.pointerId) return;
 
-    const point = moving.axisVector
-      ? getPointOnPlane(event, moving.plane, new THREE.Vector3())
-      : getGroundPoint(event, new THREE.Vector3());
+    const point = getPointOnPlane(event, moving.plane, new THREE.Vector3());
     if (!point) return;
 
     const delta = point.clone().sub(moving.startPoint);
@@ -819,6 +959,7 @@ export function createManualElementManager({
         moving.startPosition[moving.axis] + delta.dot(moving.axisVector);
     } else {
       nextPosition.x = moving.startPosition.x + delta.x;
+      nextPosition.y = moving.startPosition.y + delta.y;
       nextPosition.z = moving.startPosition.z + delta.z;
     }
 
@@ -835,6 +976,7 @@ export function createManualElementManager({
   function applySnapToMovingPosition(event, nextPosition, delta) {
     if (!snapEnabled) {
       snapMarker.visible = false;
+      hideSnapFeedback();
       return;
     }
 
@@ -842,23 +984,90 @@ export function createManualElementManager({
 
     if (!hit) {
       snapMarker.visible = false;
+      showSnapFeedback("Snap on: move near a steel/model face.");
       return;
     }
 
     const size = plainToVector(moving.element.size, new THREE.Vector3(1, 1, 1));
+    const normal = getHitWorldNormal(hit);
+    const dominant = getDominantAxis(normal);
+    const snappedPosition = getFaceSnappedPosition({
+      hitPoint: hit.point,
+      normal,
+      size,
+      fallbackPosition: nextPosition,
+    });
+    const beforeSnapDistance = nextPosition.distanceTo(snappedPosition);
 
     if (moving.axis) {
-      const axis = moving.axis;
-      const sign = Math.sign(delta.dot(moving.axisVector)) || 1;
-      nextPosition[axis] = hit.point[axis] - sign * (size[axis] / 2);
+      nextPosition[moving.axis] = snappedPosition[moving.axis];
     } else {
-      nextPosition.x = hit.point.x;
-      nextPosition.y = hit.point.y + size.y / 2;
-      nextPosition.z = hit.point.z;
+      nextPosition.copy(snappedPosition);
     }
 
     snapMarker.position.copy(hit.point);
     snapMarker.visible = true;
+    showSnapFeedback(
+      `Snap: concrete ${getConcreteFaceLabel(normal)} to ${getTargetFaceLabel(normal)} (${beforeSnapDistance.toFixed(2)}m)`
+    );
+  }
+
+  function getHitWorldNormal(hit) {
+    const normal = hit.face?.normal?.clone?.() ?? new THREE.Vector3(0, 1, 0);
+
+    return normal.transformDirection(hit.object.matrixWorld).normalize();
+  }
+
+  function getDominantAxis(vector) {
+    const absolute = {
+      x: Math.abs(vector.x),
+      y: Math.abs(vector.y),
+      z: Math.abs(vector.z),
+    };
+
+    if (absolute.y >= absolute.x && absolute.y >= absolute.z) return "y";
+    if (absolute.x >= absolute.z) return "x";
+    return "z";
+  }
+
+  function getFaceSnappedPosition({
+    hitPoint,
+    normal,
+    size,
+    fallbackPosition,
+  }) {
+    const dominant = getDominantAxis(normal);
+    const snappedPosition = fallbackPosition.clone();
+    const sign = Math.sign(normal[dominant]) || 1;
+
+    snappedPosition[dominant] =
+      hitPoint[dominant] + sign * (size[dominant] / 2);
+
+    if (!moving.axis) {
+      snappedPosition.x = dominant === "x" ? snappedPosition.x : hitPoint.x;
+      snappedPosition.y = dominant === "y" ? snappedPosition.y : hitPoint.y;
+      snappedPosition.z = dominant === "z" ? snappedPosition.z : hitPoint.z;
+    }
+
+    return snappedPosition;
+  }
+
+  function getConcreteFaceLabel(normal) {
+    const axis = getDominantAxis(normal);
+    const sign = Math.sign(normal[axis]) || 1;
+
+    if (axis === "y") return sign > 0 ? "bottom" : "top";
+    if (axis === "x") return sign > 0 ? "left side" : "right side";
+    return sign > 0 ? "back side" : "front side";
+  }
+
+  function getTargetFaceLabel(normal) {
+    const axis = getDominantAxis(normal);
+    const sign = Math.sign(normal[axis]) || 1;
+
+    if (axis === "y") return sign > 0 ? "top face" : "underside";
+    if (axis === "x") return sign > 0 ? "right face" : "left face";
+    return sign > 0 ? "front face" : "back face";
   }
 
   function getSnapHit(event) {
@@ -899,6 +1108,101 @@ export function createManualElementManager({
     container.classList.remove("is-moving-concrete");
     container.classList.remove("is-axis-moving-concrete");
     snapMarker.visible = false;
+    hideSnapFeedback();
+
+    if (container.hasPointerCapture(event.pointerId)) {
+      container.releasePointerCapture(event.pointerId);
+    }
+
+    onElementChanged();
+    requestRender();
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  function startRotating(event, handle) {
+    const element = getFirstSelectedElement();
+
+    if (!element) return false;
+
+    const { axis, label, direction } = handle.userData.rotationHandle;
+    const axisVector = direction.clone().normalize();
+    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+      axisVector,
+      element.mesh.position
+    );
+    const startPoint = getPointOnPlane(event, plane, new THREE.Vector3());
+
+    if (!startPoint) return false;
+
+    const startVector = startPoint.clone().sub(element.mesh.position);
+
+    if (startVector.lengthSq() < 0.0001) return false;
+
+    onBeforeChange("rotate concrete");
+
+    rotating = {
+      pointerId: event.pointerId,
+      element,
+      axis,
+      label,
+      axisVector,
+      plane,
+      startVector: startVector.normalize(),
+      startQuaternion: element.mesh.quaternion.clone(),
+    };
+
+    container.setPointerCapture(event.pointerId);
+    world.camera.setUserInput(false);
+    container.classList.add("is-rotating-concrete");
+
+    return true;
+  }
+
+  function updateRotating(event) {
+    if (!rotating || event.pointerId !== rotating.pointerId) return;
+
+    const point = getPointOnPlane(event, rotating.plane, new THREE.Vector3());
+    if (!point) return;
+
+    const currentVector = point.clone().sub(rotating.element.mesh.position);
+    if (currentVector.lengthSq() < 0.0001) return;
+
+    currentVector.normalize();
+
+    const cross = new THREE.Vector3().crossVectors(
+      rotating.startVector,
+      currentVector
+    );
+    const angle = Math.atan2(
+      rotating.axisVector.dot(cross),
+      rotating.startVector.dot(currentVector)
+    );
+    const deltaQuaternion = new THREE.Quaternion().setFromAxisAngle(
+      rotating.axisVector,
+      angle
+    );
+
+    rotating.element.mesh.quaternion.copy(
+      deltaQuaternion.multiply(rotating.startQuaternion)
+    );
+    rotating.element.rotation = quaternionToPlain(
+      rotating.element.mesh.quaternion
+    );
+    updateResizeHandles(rotating.element);
+    requestRender();
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }
+
+  function finishRotating(event) {
+    if (!rotating || event.pointerId !== rotating.pointerId) return;
+
+    rotating.element.rotation = quaternionToPlain(rotating.element.mesh.quaternion);
+    rotating = null;
+    world.camera.setUserInput(true);
+    container.classList.remove("is-rotating-concrete");
 
     if (container.hasPointerCapture(event.pointerId)) {
       container.releasePointerCapture(event.pointerId);
@@ -1046,6 +1350,16 @@ export function createManualElementManager({
         return;
       }
 
+      const pickedRotationHandle = pickRotationHandle(event);
+
+      if (pickedRotationHandle && startRotating(event, pickedRotationHandle)) {
+        const axis = pickedRotationHandle.userData.rotationHandle.label;
+        onStatus(`Rotating concrete around ${axis} axis.`);
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        return;
+      }
+
       const pickedHandle = pickResizeHandle(event);
 
       if (pickedHandle && startResizing(event, pickedHandle)) {
@@ -1056,7 +1370,10 @@ export function createManualElementManager({
 
       const pickedId = pickElement(event);
 
-      if (!pickedId) return;
+      if (!pickedId) {
+        clearSelection();
+        return;
+      }
 
       selectIds([pickedId]);
 
@@ -1091,6 +1408,11 @@ export function createManualElementManager({
   function onPointerMove(event) {
     if (moving) {
       updateMoving(event);
+      return;
+    }
+
+    if (rotating) {
+      updateRotating(event);
       return;
     }
 
@@ -1143,6 +1465,12 @@ export function createManualElementManager({
       return;
     }
 
+    if (rotating) {
+      finishRotating(event);
+      pointerDown = null;
+      return;
+    }
+
     if (resizing) {
       finishResizing(event);
       pointerDown = null;
@@ -1170,6 +1498,17 @@ export function createManualElementManager({
       moving = null;
       world.camera.setUserInput(true);
       container.classList.remove("is-moving-concrete");
+      container.classList.remove("is-axis-moving-concrete");
+      snapMarker.visible = false;
+      hideSnapFeedback();
+      pointerDown = null;
+      return;
+    }
+
+    if (rotating && event.pointerId === rotating.pointerId) {
+      rotating = null;
+      world.camera.setUserInput(true);
+      container.classList.remove("is-rotating-concrete");
       pointerDown = null;
       return;
     }
@@ -1200,6 +1539,7 @@ export function createManualElementManager({
     isDrawEnabled: () => drawEnabled,
     setSnapEnabled,
     isSnapEnabled: () => snapEnabled,
+    setPdfAppearanceEnabled,
     isPointerInteractionActive,
     clearSelection,
     deleteSelected,
@@ -1231,4 +1571,26 @@ function plainToVector(value, fallback) {
     Number.isFinite(Number(value.y)) ? Number(value.y) : fallback.y,
     Number.isFinite(Number(value.z)) ? Number(value.z) : fallback.z
   );
+}
+
+function quaternionToPlain(quaternion) {
+  return {
+    x: quaternion.x,
+    y: quaternion.y,
+    z: quaternion.z,
+    w: quaternion.w,
+  };
+}
+
+function plainToQuaternion(value) {
+  if (!value) return new THREE.Quaternion();
+
+  const quaternion = new THREE.Quaternion(
+    Number.isFinite(Number(value.x)) ? Number(value.x) : 0,
+    Number.isFinite(Number(value.y)) ? Number(value.y) : 0,
+    Number.isFinite(Number(value.z)) ? Number(value.z) : 0,
+    Number.isFinite(Number(value.w)) ? Number(value.w) : 1
+  );
+
+  return quaternion.normalize();
 }

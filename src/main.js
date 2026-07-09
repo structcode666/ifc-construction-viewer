@@ -48,6 +48,7 @@ const PDF_EXPORT_RENDER_MODES = {
 const PDF_EXPORT_GREY_CONTEXT_OPACITY = 0.25;
 const PDF_EXPORT_COLORS = {
   context: "#999999",
+  stageZero: "#777777",
   previous: "#00b050",
   current: "#ff0000",
 };
@@ -2543,7 +2544,7 @@ async function applyPdfExportHighlightStyles({
 
   const stageZeroApplied = await setColorForItems(
     stageZeroGeometryItems,
-    PDF_EXPORT_COLORS.context,
+    PDF_EXPORT_COLORS.stageZero,
     {
       update: false,
       context,
@@ -2644,7 +2645,7 @@ async function applyPdfExportBucketStyles({
   const applyStageZero = async () => {
     stageZeroApplied = await setColorForItems(
       stageZeroGeometryItems,
-      PDF_EXPORT_COLORS.context,
+      PDF_EXPORT_COLORS.stageZero,
       {
         update: false,
         context,
@@ -3746,6 +3747,7 @@ async function restoreViewerAfterPdfExport(previousState, context = null) {
   });
 
   ui.viewerArea.classList.remove("is-exporting");
+  manualElements?.setPdfAppearanceEnabled?.(false);
 
   world.scene.three.background = previousState.sceneBackground;
   world.scene.three.overrideMaterial = previousState.sceneOverrideMaterial;
@@ -3816,6 +3818,7 @@ async function prepareViewerForPdfExport(
   mode = "sequencing";
   showContext = false;
   showLiftLabels = true;
+  manualElements?.setPdfAppearanceEnabled?.(true);
 
   ui.toggleModeButton.textContent = "Switch to Staging";
   ui.stagingTimeline.classList.remove("is-hidden");
