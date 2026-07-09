@@ -8,7 +8,7 @@ const MIN_FOOTPRINT_SIZE = 0.1;
 const MIN_POINTER_DRAG_PX = 6;
 const HANDLE_SIZE = 0.32;
 const MOVE_HANDLE_LENGTH = 1.2;
-const ROTATION_RING_RADIUS_PADDING = 0.8;
+const ROTATION_RING_RADIUS_PADDING = 0.42;
 
 export function createManualElementManager({
   world,
@@ -65,9 +65,12 @@ export function createManualElementManager({
   const rotationHandles = [];
   const snapMarker = createSnapMarker();
   const snapFeedback = createSnapFeedback();
+  const concreteFaceMarker = createFaceMarker("#22c55e");
+  const modelFaceMarker = createFaceMarker("#facc15");
   let drawEnabled = false;
   let snapEnabled = false;
   let pdfAppearanceEnabled = false;
+  let pendingConcreteSnapFace = null;
   let drawing = null;
   let pointerDown = null;
   let moving = null;
@@ -75,6 +78,8 @@ export function createManualElementManager({
   let rotating = null;
 
   group.add(snapMarker);
+  group.add(concreteFaceMarker);
+  world.scene.three.add(modelFaceMarker);
   createMoveHandles();
   createResizeHandles();
   createRotationHandles();
@@ -391,6 +396,53 @@ export function createManualElementManager({
     return hits[0]?.object?.userData?.manualElementId ?? null;
   }
 
+  function pickConcreteFace(event) {
+    const element = getFirstSelectedElement();
+
+    if (!element) return null;
+
+    setPointerFromEvent(event);
+
+    const hits = raycaster.intersectObject(element.mesh, false);
+    const hit = hits[0];
+
+    if (!hit) return null;
+
+    const localNormal =
+      hit.face?.normal?.clone?.() ?? new THREE.Vector3(0, 1, 0);
+    const normal = getHitWorldNormal(hit);
+    const dominantAxis = getDominantAxis(localNormal);
+    const sign = Math.sign(localNormal[dominantAxis]) || 1;
+
+    return {
+      element,
+      point: hit.point.clone(),
+      normal,
+      localNormal,
+      axis: dominantAxis,
+      sign,
+      label: getConcreteFaceLabelFromAxis(dominantAxis, sign),
+    };
+  }
+
+  function pickModelFace(event) {
+    const hit = getSnapHit(event);
+
+    if (!hit) return null;
+
+    const normal = getHitWorldNormal(hit);
+    const dominantAxis = getDominantAxis(normal);
+    const sign = Math.sign(normal[dominantAxis]) || 1;
+
+    return {
+      point: hit.point.clone(),
+      normal,
+      axis: dominantAxis,
+      sign,
+      label: getTargetFaceLabelFromAxis(dominantAxis, sign),
+    };
+  }
+
   function createResizeHandles() {
     const directions = [
       { axis: "x", sign: 1, direction: new THREE.Vector3(1, 0, 0) },
@@ -576,6 +628,23 @@ export function createManualElementManager({
     return marker;
   }
 
+  function createFaceMarker(color) {
+    const marker = new THREE.Mesh(
+      new THREE.RingGeometry(0.12, 0.2, 24),
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.95,
+        side: THREE.DoubleSide,
+        depthTest: false,
+      })
+    );
+    marker.name = "Concrete face snap marker";
+    marker.visible = false;
+
+    return marker;
+  }
+
   function createSnapFeedback() {
     const element = document.createElement("div");
     element.className = "concrete-snap-feedback";
@@ -616,6 +685,15 @@ export function createManualElementManager({
 
     for (const handle of rotationHandles) {
       handle.visible = false;
+    }
+  }
+
+  function hideFaceSnapState({ keepPending = false } = {}) {
+    concreteFaceMarker.visible = false;
+    modelFaceMarker.visible = false;
+
+    if (!keepPending) {
+      pendingConcreteSnapFace = null;
     }
   }
 
@@ -796,6 +874,7 @@ export function createManualElementManager({
 
     hideAllHandles();
     snapMarker.visible = false;
+    hideFaceSnapState();
     hideSnapFeedback();
 
     for (const element of elements.values()) {
@@ -847,6 +926,8 @@ export function createManualElementManager({
 
     if (!snapEnabled) {
       snapMarker.visible = false;
+      hideFaceSnapState();
+      hideSnapFeedback();
       requestRender();
     }
   }
@@ -973,6 +1054,136 @@ export function createManualElementManager({
     event.stopImmediatePropagation();
   }
 
+  function updateShiftSnapHover(event) {
+    if (!snapEnabled || !event.shiftKey || drawing || moving || resizing || rotating) {
+      concreteFaceMarker.visible = false;
+      modelFaceMarker.visible = false;
+      return false;
+    }
+
+    if (!pendingConcreteSnapFace) {
+      const concreteFace = pickConcreteFace(event);
+
+      if (!concreteFace) {
+        concreteFaceMarker.visible = false;
+        showSnapFeedback("Shift + hover a concrete face to choose it.");
+        requestRender();
+        return true;
+      }
+
+      updateFaceMarker(concreteFaceMarker, concreteFace.point, concreteFace.normal);
+      showSnapFeedback(`Shift-click concrete ${concreteFace.label} face.`);
+      requestRender();
+      return true;
+    }
+
+    const modelFace = pickModelFace(event);
+
+    if (!modelFace) {
+      modelFaceMarker.visible = false;
+      showSnapFeedback(
+        `Concrete ${pendingConcreteSnapFace.label} selected. Shift-click a steel/model face.`
+      );
+      requestRender();
+      return true;
+    }
+
+    updateFaceMarker(modelFaceMarker, modelFace.point, modelFace.normal);
+    showSnapFeedback(
+      `Shift-click ${modelFace.label} to place concrete ${pendingConcreteSnapFace.label}.`
+    );
+    requestRender();
+    return true;
+  }
+
+  function updateFaceMarker(marker, point, normal) {
+    marker.position.copy(point).add(normal.clone().multiplyScalar(0.01));
+    marker.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), normal);
+    marker.visible = true;
+  }
+
+  function handleShiftSnapClick(event) {
+    if (!snapEnabled || !event.shiftKey || drawing || moving || resizing || rotating) {
+      return false;
+    }
+
+    if (!pendingConcreteSnapFace) {
+      const concreteFace = pickConcreteFace(event);
+
+      if (!concreteFace) {
+        setStatusForSnap("Shift-click one of the concrete cube faces first.");
+        return true;
+      }
+
+      pendingConcreteSnapFace = concreteFace;
+      updateFaceMarker(concreteFaceMarker, concreteFace.point, concreteFace.normal);
+      showSnapFeedback(
+        `Selected concrete ${concreteFace.label}. Now Shift-click a steel/model face.`
+      );
+      onStatus(
+        `Selected concrete ${concreteFace.label}. Shift-click the steel/model face to snap to.`
+      );
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return true;
+    }
+
+    const modelFace = pickModelFace(event);
+
+    if (!modelFace) {
+      showSnapFeedback("No steel/model face found. Shift-click a visible model surface.");
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return true;
+    }
+
+    onBeforeChange("snap concrete face");
+    snapConcreteFaceToModelFace(pendingConcreteSnapFace, modelFace);
+    showSnapFeedback(
+      `Placed concrete ${pendingConcreteSnapFace.label} to ${modelFace.label}.`
+    );
+    onStatus(
+      `Snapped concrete ${pendingConcreteSnapFace.label} to ${modelFace.label}.`
+    );
+    pendingConcreteSnapFace = null;
+    concreteFaceMarker.visible = false;
+    updateFaceMarker(modelFaceMarker, modelFace.point, modelFace.normal);
+    onElementChanged();
+    requestRender();
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    return true;
+  }
+
+  function setStatusForSnap(message) {
+    showSnapFeedback(message);
+    onStatus(message);
+  }
+
+  function snapConcreteFaceToModelFace(concreteFace, modelFace) {
+    const element = concreteFace.element;
+    const faceCenter = getConcreteFaceCenter(element, concreteFace);
+    const delta = modelFace.point.clone().sub(faceCenter);
+
+    element.mesh.position.add(delta);
+    element.position = vectorToPlain(element.mesh.position);
+    updateResizeHandles(element);
+  }
+
+  function getConcreteFaceCenter(element, face) {
+    const size = plainToVector(element.size, new THREE.Vector3(1, 1, 1));
+    const localNormal = new THREE.Vector3(
+      face.axis === "x" ? face.sign : 0,
+      face.axis === "y" ? face.sign : 0,
+      face.axis === "z" ? face.sign : 0
+    );
+    const localCenter = localNormal.multiply(
+      new THREE.Vector3(size.x / 2, size.y / 2, size.z / 2)
+    );
+
+    return localCenter.applyQuaternion(element.mesh.quaternion).add(element.mesh.position);
+  }
+
   function applySnapToMovingPosition(event, nextPosition, delta) {
     if (!snapEnabled) {
       snapMarker.visible = false;
@@ -1056,6 +1267,10 @@ export function createManualElementManager({
     const axis = getDominantAxis(normal);
     const sign = Math.sign(normal[axis]) || 1;
 
+    return getConcreteFaceLabelFromAxis(axis, sign);
+  }
+
+  function getConcreteFaceLabelFromAxis(axis, sign) {
     if (axis === "y") return sign > 0 ? "bottom" : "top";
     if (axis === "x") return sign > 0 ? "left side" : "right side";
     return sign > 0 ? "back side" : "front side";
@@ -1065,6 +1280,10 @@ export function createManualElementManager({
     const axis = getDominantAxis(normal);
     const sign = Math.sign(normal[axis]) || 1;
 
+    return getTargetFaceLabelFromAxis(axis, sign);
+  }
+
+  function getTargetFaceLabelFromAxis(axis, sign) {
     if (axis === "y") return sign > 0 ? "top face" : "underside";
     if (axis === "x") return sign > 0 ? "right face" : "left face";
     return sign > 0 ? "front face" : "back face";
@@ -1330,6 +1549,10 @@ export function createManualElementManager({
     };
 
     if (!drawEnabled) {
+      if (handleShiftSnapClick(event)) {
+        return;
+      }
+
       const pickedMoveHandle = pickMoveHandle(event);
 
       if (pickedMoveHandle) {
@@ -1372,6 +1595,8 @@ export function createManualElementManager({
 
       if (!pickedId) {
         clearSelection();
+        hideFaceSnapState();
+        hideSnapFeedback();
         return;
       }
 
@@ -1406,6 +1631,10 @@ export function createManualElementManager({
   }
 
   function onPointerMove(event) {
+    if (updateShiftSnapHover(event)) {
+      return;
+    }
+
     if (moving) {
       updateMoving(event);
       return;
