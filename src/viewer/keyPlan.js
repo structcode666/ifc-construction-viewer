@@ -7,6 +7,9 @@ const KEY_PLAN_LOG_PREFIX = "[Key Plan]";
 const KEY_PLAN_DEBUG = true;
 
 const MODEL_PADDING_RATIO = 0.12;
+const FOCUSED_PLAN_PADDING_RATIO = 0.65;
+const FOCUSED_PLAN_MIN_MODEL_RATIO = 0.18;
+const FOCUSED_PLAN_MIN_SIZE = 12;
 const MIN_PLAN_SIZE = 1;
 
 /**
@@ -72,14 +75,10 @@ export async function generateStageKeyPlanImage({
     fragments,
   });
 
-  // The key plan always frames the full model.
-  // Do not use stage bounds or IFC grid extents to drive the camera fit.
-  const keyPlanExtent =
-    modelBox && !modelBox.isEmpty()
-      ? extentFromBox(modelBox)
-      : stageBox && !stageBox.isEmpty()
-        ? extentFromBox(stageBox)
-        : createFallbackExtent();
+  const keyPlanExtent = createFocusedKeyPlanExtent({
+    stageBox,
+    modelBox,
+  });
 
   if (KEY_PLAN_DEBUG) {
     console.log(`${KEY_PLAN_LOG_PREFIX} Step 1 diagnostics`, {
@@ -275,6 +274,62 @@ function createFallbackExtent() {
     maxY: 10,
     minZ: -10,
     maxZ: 10,
+  };
+}
+
+function createFocusedKeyPlanExtent({
+  stageBox,
+  modelBox,
+}) {
+  if (stageBox?.isBox3 && !stageBox.isEmpty()) {
+    return expandPlanExtent({
+      extent: extentFromBox(stageBox),
+      modelBox,
+    });
+  }
+
+  if (modelBox?.isBox3 && !modelBox.isEmpty()) {
+    return extentFromBox(modelBox);
+  }
+
+  return createFallbackExtent();
+}
+
+function expandPlanExtent({
+  extent,
+  modelBox,
+}) {
+  const width = Math.max(extent.maxX - extent.minX, MIN_PLAN_SIZE);
+  const depth = Math.max(extent.maxZ - extent.minZ, MIN_PLAN_SIZE);
+  const modelPlanSize = modelBox?.isBox3 && !modelBox.isEmpty()
+    ? Math.max(
+        modelBox.max.x - modelBox.min.x,
+        modelBox.max.z - modelBox.min.z,
+        MIN_PLAN_SIZE
+      )
+    : Math.max(width, depth);
+  const minimumFocusedSize = Math.max(
+    FOCUSED_PLAN_MIN_SIZE,
+    modelPlanSize * FOCUSED_PLAN_MIN_MODEL_RATIO
+  );
+  const targetWidth = Math.max(
+    width * (1 + FOCUSED_PLAN_PADDING_RATIO * 2),
+    minimumFocusedSize
+  );
+  const targetDepth = Math.max(
+    depth * (1 + FOCUSED_PLAN_PADDING_RATIO * 2),
+    minimumFocusedSize
+  );
+  const centerX = (extent.minX + extent.maxX) / 2;
+  const centerZ = (extent.minZ + extent.maxZ) / 2;
+
+  return {
+    minX: centerX - targetWidth / 2,
+    maxX: centerX + targetWidth / 2,
+    minY: extent.minY,
+    maxY: extent.maxY,
+    minZ: centerZ - targetDepth / 2,
+    maxZ: centerZ + targetDepth / 2,
   };
 }
 
@@ -593,8 +648,8 @@ function drawGridOverlayOnCanvas({
   context.rect(0, 0, canvas.width, canvas.height);
   context.clip();
 
-  context.strokeStyle = "rgba(0, 115, 255, 0.95)";
-  context.lineWidth = 2;
+  context.strokeStyle = "rgba(148, 163, 184, 0.72)";
+  context.lineWidth = Math.max(1, Math.round(canvas.width / 1200));
   context.lineCap = "round";
   context.lineJoin = "round";
 
@@ -766,11 +821,11 @@ function drawGridLabelsOnCanvas({
     );
     context.fill();
 
-    context.strokeStyle = "rgba(0, 80, 180, 0.65)";
+    context.strokeStyle = "rgba(100, 116, 139, 0.7)";
     context.lineWidth = 1;
     context.stroke();
 
-    context.fillStyle = "rgba(0, 80, 180, 0.95)";
+    context.fillStyle = "rgba(71, 85, 105, 0.95)";
     context.fillText(label.text, x, y + 1);
   }
 }
