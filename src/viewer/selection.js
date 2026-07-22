@@ -9,6 +9,7 @@ export function initSelection({
   ui,
   onSelectionChanged,
   afterVisibilityChanged = async () => {},
+  afterHighlightReset = async () => {},
   canSelect = () => true,
 }) {
   let selectedItem = null;
@@ -301,6 +302,7 @@ export function initSelection({
     selectedItem = null;
 
     await fragments.resetHighlight();
+    await afterHighlightReset();
     await fragments.core.update(true);
 
     if (onSelectionChanged) {
@@ -320,6 +322,7 @@ export function initSelection({
     selectedItem = modelIdMap;
 
     await fragments.resetHighlight();
+    await afterHighlightReset();
     await fragments.highlight(selectionMaterial, modelIdMap);
     await fragments.core.update(true);
 

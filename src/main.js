@@ -214,6 +214,7 @@ async function startApp() {
     ui,
     onSelectionChanged: updateSelectionControls,
     afterVisibilityChanged: () => applyRemovedItemsVisibility(),
+    afterHighlightReset: () => elementColors.apply({ update: false }),
 
     // Prevent selection/highlight changes while the model is temporarily dressed
     // for PDF export.

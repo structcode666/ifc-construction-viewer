@@ -155,198 +155,84 @@
       </aside>
 
       <main class="viewer-area">
-        <div class="viewer-actions">
-          <button id="hideSelectedButton">
-            Hide Selected
-          </button>
-
-          <button id="isolateSelectedButton">
-            Isolate Selected
-          </button>
-
-          <button
-            id="removeSelectedButton"
-            title="Removes selected elements from this sequencing project. The original IFC is not modified."
-            disabled
-          >
-            Remove Selected
-          </button>
-
-          <button id="restoreRemovedButton" disabled>
-            Restore Removed
-          </button>
-
-          <button id="resetVisibilityButton">
-            Reset Visibility
-          </button>
-
-          <div class="color-control">
-            <button
-              id="changeColorButton"
-              type="button"
-              aria-expanded="false"
-              aria-controls="colorPalette"
-              disabled
-            >
-              Change Color
-            </button>
-
-            <div id="colorPalette" class="color-palette is-hidden" role="dialog" aria-label="Change selected element color">
-              <div class="color-palette-title">Element color</div>
-              <div class="color-swatches">
-                <button type="button" class="color-swatch red" data-element-color="#ef4444" aria-label="Red" title="Red"></button>
-                <button type="button" class="color-swatch yellow" data-element-color="#facc15" aria-label="Yellow" title="Yellow"></button>
-                <button type="button" class="color-swatch blue" data-element-color="#3b82f6" aria-label="Blue" title="Blue"></button>
-                <button type="button" class="color-swatch green" data-element-color="#22c55e" aria-label="Green" title="Green"></button>
-              </div>
-            </div>
-          </div>
-
-          <button id="resetAllColorsButton" type="button" class="reset-all-colors" disabled>
-            Reset All Colors
-          </button>
-        </div>
-
         <div class="viewer-top-right-controls">
-          <button id="showContextButton" class="viewer-pill-button">
-            Show Context
-          </button>
-
-          <button id="toggleLiftLabelsButton" type="button" class="secondary-button">
-            Show Lift Labels
-          </button>
-
-          <div class="manual-elements-toolbar">
-            <div class="manual-elements-title">
-              Manual Concrete
-            </div>
-
-            <button
-              id="drawConcreteButton"
-              type="button"
-              class="viewer-pill-button primary"
-              aria-pressed="false"
-            >
-              Draw Concrete
-            </button>
-
-            <label class="manual-elements-label" for="concreteHeightInput">
-              Height
-            </label>
-
-            <input
-              id="concreteHeightInput"
-              class="manual-elements-input"
-              type="number"
-              min="0.1"
-              step="0.1"
-              value="3"
-            />
-
-            <div class="manual-transform-mode" aria-label="Concrete transform mode">
-              <button
-                type="button"
-                class="manual-transform-button is-active"
-                data-concrete-transform-mode="move"
-                aria-pressed="true"
-              >
-                Move
-              </button>
-
-              <button
-                type="button"
-                class="manual-transform-button"
-                data-concrete-transform-mode="resize"
-                aria-pressed="false"
-              >
-                Resize
-              </button>
-
-              <button
-                type="button"
-                class="manual-transform-button"
-                data-concrete-transform-mode="rotate"
-                aria-pressed="false"
-              >
-                Rotate
-              </button>
-
-              <button
-                type="button"
-                class="manual-transform-button"
-                data-concrete-transform-mode="snap"
-                aria-pressed="false"
-              >
-                Snap
-              </button>
-            </div>
-
-            <button
-              id="deleteConcreteButton"
-              type="button"
-              class="viewer-pill-button"
-              disabled
-            >
-              Delete Concrete
-            </button>
-
-            <button
-              id="snapConcreteButton"
-              type="button"
-              class="viewer-pill-button"
-              aria-pressed="false"
-            >
-              Snap Off
-            </button>
+          <div class="viewer-quick-actions">
+            <button id="showContextButton" class="viewer-pill-button">Show Context</button>
+            <button id="toggleLiftLabelsButton" type="button" class="viewer-pill-button">Show Lift Labels</button>
           </div>
 
-          <div class="section-cut-toolbar">
-            <div class="section-cut-title">
-              Section Cuts
-            </div>
+          <div class="viewer-tools-panel">
+            <div class="viewer-tools-title">Viewer Tools</div>
 
-            <button
-              id="toggleClippingButton"
-              class="viewer-pill-button primary"
-            >
-              Enter Clipping Mode
-            </button>
+            <details class="viewer-tool-section" name="viewer-tools" open>
+              <summary>Visibility &amp; Color</summary>
+              <div class="viewer-actions">
+                <button id="hideSelectedButton">Hide Selected</button>
+                <button id="isolateSelectedButton">Isolate Selected</button>
+                <button id="removeSelectedButton" title="Removes selected elements from this sequencing project. The original IFC is not modified." disabled>Remove Selected</button>
+                <button id="restoreRemovedButton" disabled>Restore Removed</button>
+                <button id="resetVisibilityButton">Reset Visibility</button>
 
-            <button
-              id="clearClippingButton"
-              class="viewer-pill-button"
-            >
-              Clear Clipping Planes
-            </button>
+                <div class="color-control">
+                  <button id="changeColorButton" type="button" aria-expanded="false" aria-controls="colorPalette" disabled>Change Color</button>
+                  <div id="colorPalette" class="color-palette is-hidden" role="dialog" aria-label="Change selected element color">
+                    <div class="color-palette-title">Element color</div>
+                    <div class="color-swatches">
+                      <button type="button" class="color-swatch red" data-element-color="#ef4444" aria-label="Red" title="Red"></button>
+                      <button type="button" class="color-swatch yellow" data-element-color="#facc15" aria-label="Yellow" title="Yellow"></button>
+                      <button type="button" class="color-swatch blue" data-element-color="#3b82f6" aria-label="Blue" title="Blue"></button>
+                      <button type="button" class="color-swatch green" data-element-color="#22c55e" aria-label="Green" title="Green"></button>
+                    </div>
+                  </div>
+                </div>
 
-            <p class="section-cut-hint">
-              Double-click model to cut.
-            </p>
-          </div>
+                <button id="resetAllColorsButton" type="button" class="reset-all-colors" disabled>Reset All Colors</button>
+              </div>
+            </details>
 
-          <div class="grid-toolbar">
-            <button
-              id="toggleGridsButton"
-              type="button"
-              class="viewer-pill-button"
-              aria-pressed="false"
-              disabled
-            >
-              <span aria-hidden="true">#</span>
-              <span>Show Grids</span>
-            </button>
+            <details class="viewer-tool-section" name="viewer-tools">
+              <summary>Manual Concrete</summary>
+              <div class="manual-elements-toolbar">
 
-            <label class="grid-level-label" for="gridLevelSelect">
-              Grid Level
-            </label>
+                <button id="drawConcreteButton" type="button" class="viewer-pill-button primary" aria-pressed="false">Draw Concrete</button>
 
-            <select
-              id="gridLevelSelect"
-              class="grid-level-select"
-              disabled
-            >
-              <option value="">Primary grid level</option>
-            </select>
+                <label class="manual-elements-label" for="concreteHeightInput">Height</label>
+
+                <input id="concreteHeightInput" class="manual-elements-input" type="number" min="0.1" step="0.1" value="3" />
+
+                <div class="manual-transform-mode" aria-label="Concrete transform mode">
+                  <button type="button" class="manual-transform-button is-active" data-concrete-transform-mode="move" aria-pressed="true">Move</button>
+                  <button type="button" class="manual-transform-button" data-concrete-transform-mode="resize" aria-pressed="false">Resize</button>
+                  <button type="button" class="manual-transform-button" data-concrete-transform-mode="rotate" aria-pressed="false">Rotate</button>
+                  <button type="button" class="manual-transform-button" data-concrete-transform-mode="snap" aria-pressed="false">Snap</button>
+                </div>
+
+                <button id="deleteConcreteButton" type="button" class="viewer-pill-button" disabled>Delete Concrete</button>
+                <button id="snapConcreteButton" type="button" class="viewer-pill-button" aria-pressed="false">Snap Off</button>
+              </div>
+            </details>
+
+            <details class="viewer-tool-section" name="viewer-tools">
+              <summary>Section Cuts</summary>
+              <div class="section-cut-toolbar">
+                <button id="toggleClippingButton" class="viewer-pill-button primary">Enter Clipping Mode</button>
+                <button id="clearClippingButton" class="viewer-pill-button">Clear Clipping Planes</button>
+                <p class="section-cut-hint">Double-click model to cut.</p>
+              </div>
+            </details>
+
+            <details class="viewer-tool-section" name="viewer-tools">
+              <summary>Grids</summary>
+              <div class="grid-toolbar">
+                <button id="toggleGridsButton" type="button" class="viewer-pill-button" aria-pressed="false" disabled>
+                  <span aria-hidden="true">#</span><span>Show Grids</span>
+                </button>
+                <label class="grid-level-label" for="gridLevelSelect">Grid Level</label>
+                <select id="gridLevelSelect" class="grid-level-select" disabled>
+                  <option value="">Primary grid level</option>
+                </select>
+              </div>
+            </details>
           </div>
         </div>
 
