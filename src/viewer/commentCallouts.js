@@ -45,6 +45,16 @@ export function createCommentCalloutManager({
   overlay.className = "comment-overlay";
   container.appendChild(overlay);
 
+  function restoreCameraInput() {
+    world.camera.setUserInput(true);
+  }
+
+  function finishEditing() {
+    const activeEditor = document.activeElement?.closest?.(".comment-editor");
+    activeEditor?.blur();
+    restoreCameraInput();
+  }
+
   function updateControls() {
     const button = document.getElementById("addCommentButton");
     button?.classList.toggle("is-active", placementActive);
@@ -192,7 +202,7 @@ export function createCommentCalloutManager({
     const finishDrag = (event) => {
       if (!drag || drag.pointerId !== event.pointerId) return;
       drag = null;
-      world.camera.setUserInput(true);
+      restoreCameraInput();
       element.classList.remove("is-dragging");
       onChanged();
       event.stopPropagation();
@@ -216,13 +226,15 @@ export function createCommentCalloutManager({
     resizeObserver.observe(element);
     comment.resizeObserver = resizeObserver;
 
-    editor.addEventListener("focus", () => {
-      world.camera.setUserInput(false);
-    });
     editor.addEventListener("blur", () => {
-      world.camera.setUserInput(true);
       comment.html = editor.innerHTML;
       onChanged();
+    });
+    editor.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      editor.blur();
+      restoreCameraInput();
     });
     editor.addEventListener("input", () => {
       comment.html = editor.innerHTML;
@@ -260,6 +272,7 @@ export function createCommentCalloutManager({
 
     element.addEventListener("pointerdown", (event) => event.stopPropagation());
     element.addEventListener("click", (event) => event.stopPropagation());
+    element.addEventListener("wheel", (event) => event.stopPropagation());
     updateComment(comment);
   }
 
@@ -294,12 +307,14 @@ export function createCommentCalloutManager({
     if (!comment) return;
     comment.resizeObserver?.disconnect();
     clearTimeout(comment.resizeTimer);
+    if (comment.element?.contains(document.activeElement)) finishEditing();
     comment.wrapper?.remove();
     comments.delete(id);
     onChanged();
   }
 
   function clear() {
+    finishEditing();
     for (const comment of comments.values()) {
       comment.resizeObserver?.disconnect();
       clearTimeout(comment.resizeTimer);
@@ -330,6 +345,7 @@ export function createCommentCalloutManager({
 
   function setVisible(next) {
     visible = Boolean(next);
+    if (!visible) finishEditing();
     overlay.classList.toggle("is-hidden", !visible);
   }
 
@@ -383,6 +399,13 @@ export function createCommentCalloutManager({
     event.preventDefault();
     togglePlacement();
   });
+
+  document.addEventListener("pointerdown", (event) => {
+    if (event.target.closest?.(".comment-callout")) return;
+    finishEditing();
+  }, true);
+
+  window.addEventListener("blur", restoreCameraInput);
 
   world.camera.controls.addEventListener("update", updateAll);
   window.addEventListener("resize", updateAll);
