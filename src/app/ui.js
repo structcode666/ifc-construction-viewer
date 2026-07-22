@@ -13,6 +13,10 @@ export function getUI() {
     removeSelectedButton: document.getElementById("removeSelectedButton"),
     restoreRemovedButton: document.getElementById("restoreRemovedButton"),
     resetVisibilityButton: document.getElementById("resetVisibilityButton"),
+    changeColorButton: document.getElementById("changeColorButton"),
+    colorPalette: document.getElementById("colorPalette"),
+    colorSwatchButtons: document.querySelectorAll("[data-element-color]"),
+    resetAllColorsButton: document.getElementById("resetAllColorsButton"),
     toggleModeButton: document.getElementById("toggleMode"),
 
     addStageButton: document.getElementById("add-stage-button"),

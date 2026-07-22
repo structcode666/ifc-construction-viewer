@@ -15,6 +15,7 @@ import { saveProjectFile, readProjectFile } from "./app/projectStorage.js";
 import { createLiftLabelManager } from "./viewer/liftLabels.js";
 import { softResetFragmentVisualState } from "./viewer/fragmentVisualReset.js";
 import { generateStageKeyPlanImage } from "./viewer/keyPlan.js";
+import { createElementColorManager } from "./viewer/elementColors.js";
 
 import { toPng } from "html-to-image";
 import {
@@ -82,6 +83,7 @@ let pdfExportRunNumber = 0;
 let ifcGridLayer = null;
 let removedItems = {};
 let manualElements = null;
+let elementColors = null;
 let undoStack = [];
 let isRestoringUndo = false;
 
@@ -99,6 +101,7 @@ async function startApp() {
   world = setup.world;
   orbitControls = setup.orbitControls;
   fragments = setup.fragments;
+  elementColors = createElementColorManager({ fragments });
 
   ifcGridLayer = createIfcGridLayer({ world });
 
@@ -263,6 +266,70 @@ async function startApp() {
 
 await startApp();
 
+function setColorPaletteOpen(isOpen) {
+  if (!ui.colorPalette || !ui.changeColorButton) return;
+
+  ui.colorPalette.classList.toggle("is-hidden", !isOpen);
+  ui.changeColorButton.setAttribute("aria-expanded", String(isOpen));
+}
+
+ui.changeColorButton?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const isOpen = ui.colorPalette?.classList.contains("is-hidden") ?? true;
+  setColorPaletteOpen(isOpen);
+});
+
+ui.colorPalette?.addEventListener("click", (event) => event.stopPropagation());
+
+document.addEventListener("click", () => setColorPaletteOpen(false));
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") setColorPaletteOpen(false);
+});
+
+ui.colorSwatchButtons?.forEach((button) => {
+  button.addEventListener("click", async () => {
+    const currentSelection = selection?.getSelectedItem?.();
+    const color = button.dataset.elementColor;
+
+    if (isModelIdMapEmpty(currentSelection) || !color) {
+      setStatus("Select IFC elements before changing their color.");
+      return;
+    }
+
+    try {
+      pushUndoSnapshot("change element color");
+      await elementColors.setColor(currentSelection, color);
+      setColorPaletteOpen(false);
+      updateSelectionControls(currentSelection);
+      setStatus(
+        `Changed the color of ${countItemsInModelIdMap(currentSelection)} element(s).`
+      );
+    } catch (error) {
+      console.error("Element color change failed:", error);
+      setStatus("Failed to change the selected element colors.");
+    }
+  });
+});
+
+ui.resetAllColorsButton?.addEventListener("click", async () => {
+  if (!elementColors.hasAssignments()) {
+    setStatus("All elements already use their original IFC colors.");
+    return;
+  }
+
+  try {
+    pushUndoSnapshot("reset all element colors");
+    await elementColors.resetAll();
+    setColorPaletteOpen(false);
+    updateSelectionControls();
+    setStatus("Restored the original colors from the loaded IFC model.");
+  } catch (error) {
+    console.error("Reset all colors failed:", error);
+    setStatus("Failed to restore the original IFC colors.");
+  }
+});
+
 // -----------------------------------------------------------------------------
 // Main IFC loading
 // -----------------------------------------------------------------------------
@@ -284,6 +351,7 @@ ui.loadButton.addEventListener("click", async () => {
   }
 
   clearRemovedItems();
+  elementColors.restore({});
   manualElements?.clear?.();
   undoStack = [];
   await resetViewerVisualState();
@@ -1030,6 +1098,7 @@ ui.saveProjectButton.addEventListener("click", async () => {
       ...staging.createSnapshot(),
       manualElements: manualElements?.serialize?.() ?? [],
       removedItems: modelIdMapToSerializable(removedItems),
+      elementColors: elementColors.serialize(),
       selectedGridLevelId,
     };
     console.log("Staging snapshot:", stagingSnapshot);
@@ -1091,6 +1160,7 @@ ui.projectFileInput.addEventListener("change", async () => {
     }
 
     await waitForFragmentsReady();
+    elementColors.restore(projectData.stagingSnapshot?.elementColors);
     await resetViewerVisualState();
     setRemovedItemsFromSerializable(
       projectData.stagingSnapshot?.removedItems
@@ -1253,6 +1323,8 @@ async function resetViewerVisualState() {
     await model.resetColor();
     await model.resetOpacity();
   }
+
+  await elementColors?.apply?.({ update: false });
 
   await fragments.core.update(true);
 }
@@ -1477,6 +1549,7 @@ function captureUndoSnapshot(label = "change") {
     stagingSnapshot: staging.createSnapshot(),
     manualElements: manualElements?.serialize?.() ?? [],
     removedItems: modelIdMapToSerializable(removedItems),
+    elementColors: elementColors?.serialize?.() ?? {},
     selectedGridLevelId,
     sliderValue: ui.stageSlider?.value ?? "0",
     mode,
@@ -1508,6 +1581,7 @@ async function restoreUndoSnapshot(snapshot) {
     }
 
     removedItems = serializableToModelIdMap(snapshot.removedItems);
+    elementColors?.restore?.(snapshot.elementColors);
     manualElements?.restore?.(snapshot.manualElements);
     setSelectedGridLevelId(snapshot.selectedGridLevelId, {
       updateVisibleLayer: false,
@@ -1591,6 +1665,18 @@ function updateSelectionControls(currentSelection = selection?.getSelectedItem?.
 
   if (ui.deleteConcreteButton) {
     ui.deleteConcreteButton.disabled = isPdfExporting || !hasManualSelection;
+  }
+
+  if (ui.changeColorButton) {
+    ui.changeColorButton.disabled =
+      isPdfExporting || isModelIdMapEmpty(currentSelection);
+
+    if (ui.changeColorButton.disabled) setColorPaletteOpen(false);
+  }
+
+  if (ui.resetAllColorsButton) {
+    ui.resetAllColorsButton.disabled =
+      isPdfExporting || !elementColors?.hasAssignments?.();
   }
 }
 

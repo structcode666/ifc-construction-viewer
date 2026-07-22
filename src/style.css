@@ -696,6 +696,63 @@ button:disabled {
   transform: translateY(0);
 }
 
+.color-control {
+  position: relative;
+}
+
+.color-palette {
+  position: absolute;
+  top: calc(100% + 0.6rem);
+  right: 0;
+  width: 190px;
+  padding: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.96);
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(14px);
+}
+
+.color-palette.is-hidden {
+  display: none;
+}
+
+.color-palette-title {
+  margin-bottom: 0.6rem;
+  color: #e2e8f0;
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.color-swatches {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0.5rem;
+}
+
+.viewer-actions .color-swatch {
+  min-width: 0;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 2px solid rgba(255, 255, 255, 0.7);
+  border-radius: 50%;
+}
+
+.viewer-actions .color-swatch.red { background: #ef4444; }
+.viewer-actions .color-swatch.yellow { background: #facc15; }
+.viewer-actions .color-swatch.blue { background: #3b82f6; }
+.viewer-actions .color-swatch.green { background: #22c55e; }
+
+.viewer-actions .color-swatch:hover {
+  border-color: #fff;
+  transform: scale(1.08);
+}
+
+.viewer-actions .reset-all-colors {
+  color: #fecaca;
+}
+
 /* =========================
    VIEWER TOP RIGHT CONTROLS
 ========================= */

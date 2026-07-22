@@ -179,6 +179,32 @@
           <button id="resetVisibilityButton">
             Reset Visibility
           </button>
+
+          <div class="color-control">
+            <button
+              id="changeColorButton"
+              type="button"
+              aria-expanded="false"
+              aria-controls="colorPalette"
+              disabled
+            >
+              Change Color
+            </button>
+
+            <div id="colorPalette" class="color-palette is-hidden" role="dialog" aria-label="Change selected element color">
+              <div class="color-palette-title">Element color</div>
+              <div class="color-swatches">
+                <button type="button" class="color-swatch red" data-element-color="#ef4444" aria-label="Red" title="Red"></button>
+                <button type="button" class="color-swatch yellow" data-element-color="#facc15" aria-label="Yellow" title="Yellow"></button>
+                <button type="button" class="color-swatch blue" data-element-color="#3b82f6" aria-label="Blue" title="Blue"></button>
+                <button type="button" class="color-swatch green" data-element-color="#22c55e" aria-label="Green" title="Green"></button>
+              </div>
+            </div>
+          </div>
+
+          <button id="resetAllColorsButton" type="button" class="reset-all-colors" disabled>
+            Reset All Colors
+          </button>
         </div>
 
         <div class="viewer-top-right-controls">
