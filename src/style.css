@@ -638,6 +638,147 @@ button:disabled {
   box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.35);
 }
 
+#viewer-container.is-placing-comment,
+#viewer-container.is-placing-comment canvas {
+  cursor: crosshair;
+}
+
+#addCommentButton.is-active {
+  border-color: #fbbf24;
+  background: #f59e0b;
+  color: #111827;
+}
+
+.comment-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.comment-callout-wrapper {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.comment-callout-wrapper.is-behind-camera {
+  display: none;
+}
+
+.comment-anchor {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  border: 2px solid #ffffff;
+  border-radius: 50%;
+  background: #f59e0b;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.55);
+}
+
+.comment-leader {
+  position: absolute;
+  height: 2px;
+  transform-origin: 0 50%;
+  background: #f59e0b;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.45);
+}
+
+.comment-callout {
+  position: absolute;
+  min-width: 190px;
+  min-height: 100px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  resize: both;
+  pointer-events: auto;
+  border: 1px solid rgba(245, 158, 11, 0.95);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.97);
+  color: #0f172a;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.35);
+}
+
+.comment-callout.is-dragging {
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.48);
+}
+
+.comment-callout-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex: 0 0 auto;
+  padding: 5px 7px 5px 10px;
+  background: #f59e0b;
+  color: #111827;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.comment-callout.is-dragging .comment-callout-header {
+  cursor: grabbing;
+}
+
+.comment-delete-button {
+  width: 23px;
+  height: 23px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.7);
+  color: #7c2d12;
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 20px;
+  box-shadow: none;
+}
+
+.comment-delete-button:hover {
+  background: #ffffff;
+  transform: none;
+  box-shadow: none;
+}
+
+.comment-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 10px;
+  overflow: auto;
+  outline: none;
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.comment-editor:empty::before {
+  content: attr(data-placeholder);
+  color: #94a3b8;
+  pointer-events: none;
+}
+
+.comment-editor img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 7px 0;
+  border-radius: 4px;
+}
+
+.viewer-area.is-exporting .comment-overlay {
+  display: none;
+}
+
 /* =========================
    VIEWER VISIBILITY TOOLBAR
 ========================= */
@@ -757,6 +898,8 @@ button:disabled {
 
 .viewer-quick-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 0.5rem;
 }
 

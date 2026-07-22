@@ -16,6 +16,7 @@ import { createLiftLabelManager } from "./viewer/liftLabels.js";
 import { softResetFragmentVisualState } from "./viewer/fragmentVisualReset.js";
 import { generateStageKeyPlanImage } from "./viewer/keyPlan.js";
 import { createElementColorManager } from "./viewer/elementColors.js";
+import { createCommentCalloutManager } from "./viewer/commentCallouts.js";
 
 import { toPng } from "html-to-image";
 import {
@@ -84,6 +85,7 @@ let ifcGridLayer = null;
 let removedItems = {};
 let manualElements = null;
 let elementColors = null;
+let comments = null;
 let undoStack = [];
 let isRestoringUndo = false;
 
@@ -207,6 +209,32 @@ async function startApp() {
 
   window.manualElements = manualElements;
 
+  comments = createCommentCalloutManager({
+    world,
+    fragments,
+    container: ui.viewerContainer,
+    modelRaycaster: components.get(OBC.Raycasters).get(world),
+    onBeforeChange: (label) => pushUndoSnapshot(label),
+    onStatus: setStatus,
+    canPlace: () => {
+      if (isPdfExporting) {
+        setStatus("Wait for PDF export to finish before adding comments.");
+        return false;
+      }
+      if (!currentModel) {
+        setStatus("Load an IFC model before adding a comment.");
+        return false;
+      }
+      if (manualElements?.isPointerInteractionActive?.()) {
+        setStatus("Finish the current concrete drawing action before adding a comment.");
+        return false;
+      }
+      return true;
+    },
+  });
+
+  window.comments = comments;
+
   selection = initSelection({
     components,
     world,
@@ -219,7 +247,9 @@ async function startApp() {
     // Prevent selection/highlight changes while the model is temporarily dressed
     // for PDF export.
     canSelect: () =>
-      !isPdfExporting && !manualElements?.isPointerInteractionActive?.(),
+      !isPdfExporting &&
+      !manualElements?.isPointerInteractionActive?.() &&
+      !comments?.isPlacementActive?.(),
   });
 
   await initClipping({
@@ -266,6 +296,27 @@ async function startApp() {
 }
 
 await startApp();
+
+ui.addCommentButton?.addEventListener("click", () => {
+  if (isPdfExporting) {
+    setStatus("Wait for PDF export to finish before adding comments.");
+    return;
+  }
+  if (!currentModel) {
+    setStatus("Load an IFC model before adding a comment.");
+    return;
+  }
+  comments?.togglePlacement?.();
+});
+
+ui.toggleCommentsButton?.addEventListener("click", () => {
+  const areVisible = comments?.toggleVisible?.() ?? true;
+  ui.toggleCommentsButton.textContent = areVisible
+    ? "Hide Comments"
+    : "Show Comments";
+  ui.toggleCommentsButton.setAttribute("aria-pressed", String(areVisible));
+  setStatus(areVisible ? "Comments shown." : "Comments hidden.");
+});
 
 function setColorPaletteOpen(isOpen) {
   if (!ui.colorPalette || !ui.changeColorButton) return;
@@ -354,6 +405,7 @@ ui.loadButton.addEventListener("click", async () => {
   clearRemovedItems();
   elementColors.restore({});
   manualElements?.clear?.();
+  comments?.clear?.();
   undoStack = [];
   await resetViewerVisualState();
 
@@ -1109,6 +1161,7 @@ ui.saveProjectButton.addEventListener("click", async () => {
     await saveProjectFile({
       ifcFile: currentIfcFile,
       stagingSnapshot,
+      commentsSnapshot: comments?.serialize?.() ?? [],
       projectName,
     });
 
@@ -1191,6 +1244,7 @@ ui.projectFileInput.addEventListener("change", async () => {
 
     renderStagingUI();
     manualElements?.restore?.(projectData.stagingSnapshot?.manualElements);
+    comments?.restore?.(projectData.commentsSnapshot);
     undoStack = [];
     updateRemovedItemsControls();
     enterSequencingMode();
@@ -1551,6 +1605,7 @@ function captureUndoSnapshot(label = "change") {
     manualElements: manualElements?.serialize?.() ?? [],
     removedItems: modelIdMapToSerializable(removedItems),
     elementColors: elementColors?.serialize?.() ?? {},
+    comments: comments?.serialize?.() ?? [],
     selectedGridLevelId,
     sliderValue: ui.stageSlider?.value ?? "0",
     mode,
@@ -1584,6 +1639,7 @@ async function restoreUndoSnapshot(snapshot) {
     removedItems = serializableToModelIdMap(snapshot.removedItems);
     elementColors?.restore?.(snapshot.elementColors);
     manualElements?.restore?.(snapshot.manualElements);
+    comments?.restore?.(snapshot.comments);
     setSelectedGridLevelId(snapshot.selectedGridLevelId, {
       updateVisibleLayer: false,
     });

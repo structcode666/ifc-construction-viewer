@@ -62,6 +62,8 @@ export function getUI() {
     createLiftButton: document.getElementById("create-lift-button"),
 
     toggleLiftLabelsButton: document.getElementById("toggleLiftLabelsButton"),
+    addCommentButton: document.getElementById("addCommentButton"),
+    toggleCommentsButton: document.getElementById("toggleCommentsButton"),
 
     exportStagePdfButton: document.getElementById("export-stage-pdf-button"),
 
